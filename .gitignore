@@ -177,3 +177,6 @@ cython_debug/
 
 # ignore jsonl files
 *.jsonl
+
+# ignore dataset folder and files
+dataset/
