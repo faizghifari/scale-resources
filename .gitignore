@@ -180,3 +180,4 @@ cython_debug/
 
 # ignore dataset folder and files
 dataset/
+synthetic/
