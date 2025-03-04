@@ -20,7 +20,7 @@ def is_sentence_example_valid(example):
     indonesian_tokens = count_tokens(indonesian)
 
     # Check if difference is too large
-    if abs(balinese_tokens - indonesian_tokens) > 20:
+    if abs(balinese_tokens - indonesian_tokens) > 15:
         return False
 
     return True
@@ -97,5 +97,5 @@ def run_clean_dictionary():
 
 
 if __name__ == "__main__":
-    # run_invalid_entries_check()
-    run_clean_dictionary()
+    run_invalid_entries_check()
+    # run_clean_dictionary()
