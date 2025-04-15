@@ -183,3 +183,5 @@ cython_debug/
 dataset/
 synthetic/
 models/
+unsloth*/
+wandb/
