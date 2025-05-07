@@ -1,8 +1,8 @@
 python -m text_dedup.minhash \
-   --path "dataset/bali_hq/all_bali_hq" \
+   --path "dataset/cbn_hq/all_cbn_hq" \
    --local \
    --cache_dir "./cache" \
-   --output "dataset/bali_hq/all_bali_hq_dedup" \
+   --output "dataset/cbn_hq/all_cbn_hq_dedup" \
    --column "text" \
    --batch_size 10000 \
    --ngram 7 \

@@ -107,7 +107,7 @@ def train(
     print("Training...")
 
     if do_train:
-        train_result = trainer.train(resume_from_checkpoint=True)
+        train_result = trainer.train()
         metrics = train_result.metrics
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
