@@ -1,10 +1,15 @@
-CUDA_VISIBLE_DEVICES=0 python cpt_unsloth.py \
-    --model_id unsloth/qwen2.5-3b-bnb-4bit \
-    --dataset_dir dataset/cpt/bali_hq_200k/ \
-    --project_name BaliQwen-3B-HQ \
-    --run_name epoch-1-bs-1-20250415 \
-    --batch_size 1 \
-    --gradient_accumulation_steps 16 \
-    --save_steps 1000 \
-    --device_id 0 \
-    --output_dir models/BaliQwen-3B-HQ
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Train a Balinese-only small LM from scratch using train.py
+# - Trains a language-specific tokenizer (32k default)
+# - Uses Balinese train/val datasets under dataset/cpt
+
+CUDA_VISIBLE_DEVICES=0 python train.py \
+    --train_dirs dataset/cpt/bali_hq_200k\
+    --val_dirs dataset/cpt/bali_valid_hq_5000 \
+    --output_dir models/Balinese-SmallLM \
+    --train_tokenizer \
+    --report_to wandb \
+    --wandb_project BaliLM \
+    --run_name bali-32k-synth_all-hq_2x-150M
