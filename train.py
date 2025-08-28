@@ -9,16 +9,18 @@ Key features:
 - Normalizes to a single 'text' column, tokenizes, and packs into fixed-length blocks for causal LM
 - Pure fp16 (no bf16), gradient checkpointing, low batch sizes for memory efficiency
 
+First, train a tokenizer using the dedicated script:
+    python train_tokenizer.py \\
+        --train_dirs dataset/cpt/bali_hq_200k,dataset/cpt/cbn_hq_2k \\
+        --output_dir models/BaliCirebonese-Tokenizer --vocab_size 32000
+
 Example usage (adjust paths as needed):
     python train.py \
         --train_dirs dataset/cpt/bali_hq_200k,dataset/cpt/bali_filtered_bt-85,dataset/cpt/cbn_hq_2k \
         --val_dirs dataset/cpt/bali_valid_hq_5000,dataset/cpt/cbn_valid_hq_500 \
-        --output_dir models/BaliCirebonese-SmallLM \
+        --output_dir models/BaliCirebonese-SmallLM --tokenizer_path_or_id models/BaliCirebonese-Tokenizer \
         --arch llama --dim 512 --n_layers 12 --n_heads 8 --seq_len 512 \
         --num_train_epochs 1 --per_device_train_batch_size 1 --gradient_accumulation_steps 32 --fp16
-
-Using a custom tokenizer you trained and saved with `tokenizer.save_pretrained(dir)`, pass:
-    --tokenizer_dir path/to/your_tokenizer
 
 Requirements:
     pip install transformers datasets accelerate
@@ -64,16 +66,10 @@ def parse_args() -> argparse.Namespace:
         description="Train a small LLaMA/Mistral LM from scratch (fp16)"
     )
     parser.add_argument(
-        "--model_id",
+        "--tokenizer_path_or_id",
         type=str,
-        default="TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
-        help="Tokenizer source repo id (used for tokenizer only).",
-    )
-    parser.add_argument(
-        "--tokenizer_dir",
-        type=str,
-        default=None,
-        help="Path to a custom trained tokenizer (directory saved via save_pretrained). If provided, overrides --model_id for tokenizer loading.",
+        required=True,
+        help="Path to a local tokenizer directory or a Hugging Face Hub repository ID.",
     )
     parser.add_argument(
         "--train_dirs",
@@ -133,31 +129,6 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Weights & Biases entity/org (optional)",
-    )
-
-    # Tokenizer training (in-script)
-    parser.add_argument(
-        "--train_tokenizer",
-        action="store_true",
-        help="Train a tokenizer from the training data on the fly",
-    )
-    parser.add_argument(
-        "--vocab_size",
-        type=int,
-        default=32000,
-        help="Tokenizer vocab size when training from scratch",
-    )
-    parser.add_argument(
-        "--min_frequency",
-        type=int,
-        default=2,
-        help="Minimum token frequency for BPE trainer (only applicable for some trainers)",
-    )
-    parser.add_argument(
-        "--tokenizer_template_id",
-        type=str,
-        default="gpt2",
-        help="Base fast tokenizer to use as a template for train_new_from_iterator (e.g., gpt2)",
     )
 
     # Model arch & size (from scratch)
@@ -288,66 +259,30 @@ def load_concat_datasets(dir_list: List[str], split_name: str) -> Dataset:
     return concatenate_datasets(datasets)
 
 
-def train_tokenizer_from_data(
-    args: argparse.Namespace, train_ds: Dataset, save_dir: str
-) -> PreTrainedTokenizerFast:
-    print(
-        f"Training tokenizer on {len(train_ds):,} examples | vocab_size={args.vocab_size}"
-    )
-    # Use a known-trainable fast tokenizer as template (e.g., gpt2)
-    try:
-        template_id = args.tokenizer_template_id or "gpt2"
-        print(f"Using tokenizer template: {template_id}")
-        base_tok = AutoTokenizer.from_pretrained(template_id, use_fast=True)
-
-        def text_iter():
-            for t in train_ds["text"]:
-                if t is None:
-                    continue
-                s = str(t).strip()
-                if s:
-                    yield s
-
-        new_tok = base_tok.train_new_from_iterator(text_iter(), args.vocab_size)
-
-        # Ensure special tokens exist
-        special_dict = {}
-        if new_tok.unk_token is None:
-            special_dict["unk_token"] = "<unk>"
-        if new_tok.bos_token is None:
-            special_dict["bos_token"] = "<s>"
-        if new_tok.eos_token is None:
-            special_dict["eos_token"] = "</s>"
-        if new_tok.pad_token is None:
-            special_dict["pad_token"] = "<pad>"
-        if special_dict:
-            new_tok.add_special_tokens(special_dict)
-
-        new_tok.model_max_length = 10_000_000
-        os.makedirs(save_dir, exist_ok=True)
-        new_tok.save_pretrained(save_dir)
-        print(f"Saved trained tokenizer -> {save_dir}")
-        return new_tok
-    except Exception as e:
-        print(f"[ERROR] train_new_from_iterator failed: {e}")
-        raise
-
-
 def load_tokenizer(
     args: argparse.Namespace, train_ds: Dataset
 ) -> PreTrainedTokenizerFast:
-    if getattr(args, "train_tokenizer", False):
-        tok_dir = os.path.join(args.output_dir, "tokenizer")
-        return train_tokenizer_from_data(args, train_ds, tok_dir)
-    if (
-        getattr(args, "tokenizer_dir", None)
-        and args.tokenizer_dir
-        and os.path.isdir(args.tokenizer_dir)
-    ):
-        print(f"Loading tokenizer from custom dir: {args.tokenizer_dir}")
-        return AutoTokenizer.from_pretrained(args.tokenizer_dir, use_fast=True)  # type: ignore
-    print(f"Loading tokenizer from model id: {args.model_id}")
-    return AutoTokenizer.from_pretrained(args.model_id, use_fast=True)  # type: ignore
+    """Loads a tokenizer from a local path or Hugging Face Hub.
+
+    Args:
+        args: Command-line arguments.
+        train_ds: The training dataset (unused, kept for signature consistency).
+
+    Returns:
+        The loaded fast tokenizer.
+    """
+    path_or_id = args.tokenizer_path_or_id
+    print(f"Loading tokenizer from: {path_or_id}")
+    try:
+        # from_pretrained handles both local paths and hub IDs
+        tokenizer = AutoTokenizer.from_pretrained(path_or_id, use_fast=True)
+        return tokenizer  # type: ignore
+    except Exception as e:
+        print(
+            f"[ERROR] Failed to load tokenizer from '{path_or_id}': {e}",
+            file=sys.stderr,
+        )
+        raise
 
 
 def build_model(args: argparse.Namespace, tokenizer: PreTrainedTokenizerFast):
@@ -482,13 +417,17 @@ def main():
             else None
         )
         if last_ckpt is None:
-            print("[WARN] --resume_weights_only set but no checkpoint found; building a fresh model.")
+            print(
+                "[WARN] --resume_weights_only set but no checkpoint found; building a fresh model."
+            )
         else:
             print(f"Loading model weights from checkpoint (weights only): {last_ckpt}")
             try:
                 model = AutoModelForCausalLM.from_pretrained(last_ckpt)
             except Exception as e:
-                print(f"[ERROR] Failed to load model from {last_ckpt}: {e}. Falling back to fresh model.")
+                print(
+                    f"[ERROR] Failed to load model from {last_ckpt}: {e}. Falling back to fresh model."
+                )
                 model = None
     if model is None:
         print("Building model from scratch config...")
