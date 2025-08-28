@@ -43,6 +43,7 @@ from transformers.models.mistral.configuration_mistral import MistralConfig
 from transformers.data.data_collator import DataCollatorForLanguageModeling
 from transformers.trainer import Trainer
 from transformers.training_args import TrainingArguments
+from transformers.trainer_callback import EarlyStoppingCallback
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from transformers.trainer_utils import get_last_checkpoint
 import torch
@@ -196,6 +197,35 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Load model weights from the last checkpoint (no optimizer/scheduler state).",
+    )
+    parser.add_argument(
+        "--init_from_path_or_id",
+        type=str,
+        default=None,
+        help="Initialize model weights from a local model directory or HF model repo (ignores optimizer).",
+    )
+    parser.add_argument(
+        "--early_stopping_patience", type=int, default=2, help="Early stopping patience in evaluation steps (patience rounds). Set 0 to disable."
+    )
+    parser.add_argument(
+        "--early_stopping_threshold", type=float, default=0.0, help="Minimum improvement to qualify as better."
+    )
+    parser.add_argument(
+        "--disable_early_stopping", action="store_true", default=False, help="Disable early stopping callback."
+    )
+
+    # Hub push options
+    parser.add_argument(
+        "--push_to_hub", action="store_true", default=False, help="Push model to the Hugging Face Hub at the end."
+    )
+    parser.add_argument(
+        "--hub_model_id", type=str, default=None, help="Target HF model repo id, e.g., 'user/repo'."
+    )
+    parser.add_argument(
+        "--hub_private", action="store_true", default=True, help="Create/use private repo on the Hub."
+    )
+    parser.add_argument(
+        "--hub_strategy", type=str, default="end", help="When to push to hub: 'end' or 'checkpoint' (if supported)."
     )
 
     return parser.parse_args()
@@ -410,7 +440,15 @@ def main():
     # Build or load model
     model = None
     last_ckpt = None
-    if args.resume_weights_only:
+    if args.init_from_path_or_id:
+        src = args.init_from_path_or_id
+        print(f"Initializing model weights from: {src}")
+        try:
+            model = AutoModelForCausalLM.from_pretrained(src)
+        except Exception as e:
+            print(f"[ERROR] Failed to load model from {src}: {e}. Falling back to other init path.")
+            model = None
+    elif args.resume_weights_only:
         last_ckpt = (
             get_last_checkpoint(args.output_dir)
             if os.path.isdir(args.output_dir)
@@ -514,7 +552,23 @@ def main():
     )
     # Use new arg name to avoid deprecation warnings
     _ta_kwargs["eval_strategy"] = "steps"
+    # Hub args
+    if args.push_to_hub and args.hub_model_id:
+        _ta_kwargs["push_to_hub"] = True
+        _ta_kwargs["hub_model_id"] = args.hub_model_id
+        _ta_kwargs["hub_private_repo"] = args.hub_private
+        # hub_strategy key name varies by transformers version; set if available name
+        _ta_kwargs["hub_strategy"] = args.hub_strategy
     training_args = TrainingArguments(**_ta_kwargs)
+
+    callbacks = []
+    if not args.disable_early_stopping and args.early_stopping_patience > 0:
+        callbacks.append(
+            EarlyStoppingCallback(
+                early_stopping_patience=args.early_stopping_patience,
+                early_stopping_threshold=args.early_stopping_threshold,
+            )
+        )
 
     trainer = Trainer(
         model=model,
@@ -522,11 +576,12 @@ def main():
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         data_collator=data_collator,
+        callbacks=callbacks,
     )
 
     print("Starting training...")
     resume_arg: bool | str = False
-    if args.resume_from_checkpoint and not args.resume_weights_only:
+    if args.resume_from_checkpoint and not args.resume_weights_only and not args.init_from_path_or_id:
         last_ckpt = (
             get_last_checkpoint(args.output_dir)
             if os.path.isdir(args.output_dir)
@@ -552,6 +607,14 @@ def main():
     eval_metrics = trainer.evaluate()
     trainer.log_metrics("eval", eval_metrics)
     trainer.save_metrics("eval", eval_metrics)
+
+    # Optionally push to hub at end
+    if getattr(training_args, "push_to_hub", False) and args.hub_model_id:
+        try:
+            trainer.push_to_hub()
+            print(f"Pushed model to Hub: {args.hub_model_id}")
+        except Exception as e:
+            print(f"[WARN] push_to_hub failed: {e}")
 
     print("Done. Model saved to:", args.output_dir)
 
