@@ -172,6 +172,12 @@ def train_tokenizer(
         if special_dict:
             new_tok.add_special_tokens(special_dict)
 
+        # Set a very large model_max_length to avoid warnings. The actual sequence length
+        # is determined by the model's configuration and the training script.
+        # A value of 2048 would also work, but a large value is more flexible.
+        new_tok.model_max_length = 10_000_000
+        print(f"Set tokenizer's model_max_length to {new_tok.model_max_length}")
+
         os.makedirs(args.output_dir, exist_ok=True)
         new_tok.save_pretrained(args.output_dir)
         print(f"Saved trained tokenizer -> {args.output_dir}")
