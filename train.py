@@ -225,27 +225,48 @@ def parse_args() -> argparse.Namespace:
         help="Initialize model weights from a local model directory or HF model repo (ignores optimizer).",
     )
     parser.add_argument(
-        "--early_stopping_patience", type=int, default=2, help="Early stopping patience in evaluation steps (patience rounds). Set 0 to disable."
+        "--early_stopping_patience",
+        type=int,
+        default=2,
+        help="Early stopping patience in evaluation steps (patience rounds). Set 0 to disable.",
     )
     parser.add_argument(
-        "--early_stopping_threshold", type=float, default=0.0, help="Minimum improvement to qualify as better."
+        "--early_stopping_threshold",
+        type=float,
+        default=0.0,
+        help="Minimum improvement to qualify as better.",
     )
     parser.add_argument(
-        "--disable_early_stopping", action="store_true", default=False, help="Disable early stopping callback."
+        "--disable_early_stopping",
+        action="store_true",
+        default=False,
+        help="Disable early stopping callback.",
     )
 
     # Hub push options
     parser.add_argument(
-        "--push_to_hub", action="store_true", default=False, help="Push model to the Hugging Face Hub at the end."
+        "--push_to_hub",
+        action="store_true",
+        default=False,
+        help="Push model to the Hugging Face Hub at the end.",
     )
     parser.add_argument(
-        "--hub_model_id", type=str, default=None, help="Target HF model repo id, e.g., 'user/repo'."
+        "--hub_model_id",
+        type=str,
+        default=None,
+        help="Target HF model repo id, e.g., 'user/repo'.",
     )
     parser.add_argument(
-        "--hub_private", action="store_true", default=True, help="Create/use private repo on the Hub."
+        "--hub_private",
+        action="store_true",
+        default=True,
+        help="Create/use private repo on the Hub.",
     )
     parser.add_argument(
-        "--hub_strategy", type=str, default="end", help="When to push to hub: 'end' or 'checkpoint' (if supported)."
+        "--hub_strategy",
+        type=str,
+        default="end",
+        help="When to push to hub: 'end' or 'checkpoint' (if supported).",
     )
 
     return parser.parse_args()
@@ -466,7 +487,9 @@ def main():
         try:
             model = AutoModelForCausalLM.from_pretrained(src)
         except Exception as e:
-            print(f"[ERROR] Failed to load model from {src}: {e}. Falling back to other init path.")
+            print(
+                f"[ERROR] Failed to load model from {src}: {e}. Falling back to other init path."
+            )
             model = None
     elif args.resume_weights_only:
         last_ckpt = (
@@ -572,7 +595,6 @@ def main():
     )
     # Evaluation strategy (set both keys for version compatibility)
     _ta_kwargs["eval_strategy"] = args.eval_strategy
-    _ta_kwargs["evaluation_strategy"] = args.eval_strategy
     # Hub args
     if args.push_to_hub and args.hub_model_id:
         _ta_kwargs["push_to_hub"] = True
@@ -602,7 +624,11 @@ def main():
 
     print("Starting training...")
     resume_arg: bool | str = False
-    if args.resume_from_checkpoint and not args.resume_weights_only and not args.init_from_path_or_id:
+    if (
+        args.resume_from_checkpoint
+        and not args.resume_weights_only
+        and not args.init_from_path_or_id
+    ):
         last_ckpt = (
             get_last_checkpoint(args.output_dir)
             if os.path.isdir(args.output_dir)
