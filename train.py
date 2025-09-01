@@ -114,6 +114,26 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="If set (e.g., 0.1), save a checkpoint every given fraction of an epoch.",
     )
+    parser.add_argument(
+        "--save_strategy",
+        type=str,
+        choices=["steps", "epoch"],
+        default="steps",
+        help="Saving strategy: by steps or by epoch.",
+    )
+    parser.add_argument(
+        "--eval_strategy",
+        type=str,
+        choices=["steps", "epoch"],
+        default="steps",
+        help="Evaluation strategy: by steps or by epoch.",
+    )
+    parser.add_argument(
+        "--save_total_limit",
+        type=int,
+        default=None,
+        help="Maximum number of checkpoints to keep (None = keep all).",
+    )
     parser.add_argument("--adam_beta1", type=float, default=0.9)
     parser.add_argument("--adam_beta2", type=float, default=0.95)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
@@ -496,7 +516,7 @@ def main():
 
     # Optionally convert save_fraction to save_steps (approximate)
     computed_save_steps = args.save_steps
-    if args.save_fraction is not None:
+    if args.save_fraction is not None and args.save_strategy == "steps":
         world_size = max(1, torch.cuda.device_count())
         eff_batch = (
             args.per_device_train_batch_size
@@ -531,7 +551,7 @@ def main():
         logging_steps=args.logging_steps,
         eval_steps=args.eval_steps,
         save_steps=computed_save_steps,
-        save_total_limit=2,
+        save_total_limit=args.save_total_limit,
         lr_scheduler_type="cosine",
         report_to=None if args.report_to == "none" else args.report_to,
         bf16=False,
@@ -544,14 +564,15 @@ def main():
         adam_beta2=args.adam_beta2,
         max_grad_norm=args.max_grad_norm,
         dataloader_num_workers=args.dataloader_num_workers,
-        save_strategy="steps",
+        save_strategy=args.save_strategy,
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         run_name=args.run_name,
     )
-    # Use new arg name to avoid deprecation warnings
-    _ta_kwargs["eval_strategy"] = "steps"
+    # Evaluation strategy (set both keys for version compatibility)
+    _ta_kwargs["eval_strategy"] = args.eval_strategy
+    _ta_kwargs["evaluation_strategy"] = args.eval_strategy
     # Hub args
     if args.push_to_hub and args.hub_model_id:
         _ta_kwargs["push_to_hub"] = True
