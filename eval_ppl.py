@@ -43,6 +43,17 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated list of dataset save_to_disk directories.",
     )
     p.add_argument("--seq_len", type=int, default=2048)
+    p.add_argument(
+        "--stride",
+        type=int,
+        default=None,
+        help="Sliding window stride (< seq_len enables sliding-window PPL). Default: no sliding (use non-overlapping blocks).",
+    )
+    p.add_argument(
+        "--drop_first_window",
+        action="store_true",
+        help="When using sliding-window PPL, don't score tokens from the first window of each document.",
+    )
     p.add_argument("--per_device_eval_batch_size", type=int, default=2)
     p.add_argument("--shuffle", action="store_true", default=False)
     p.add_argument("--seed", type=int, default=42)
@@ -51,6 +62,25 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional cap on number of rows before tokenization (for a quick check).",
+    )
+    p.add_argument(
+        "--report_to",
+        type=str,
+        choices=["none", "wandb"],
+        default="wandb",
+        help="Where to report metrics. Defaults to 'wandb'.",
+    )
+    p.add_argument(
+        "--wandb_project",
+        type=str,
+        default="EvalLM",
+        help="Weights & Biases project name (when --report_to=wandb).",
+    )
+    p.add_argument(
+        "--wandb_run_name",
+        type=str,
+        default=None,
+        help="Optional Weights & Biases run name. Defaults to 'eval-ppl-<model>'.",
     )
     return p.parse_args()
 
@@ -151,6 +181,205 @@ def tokenize_and_group(tokenizer: Any, ds: Dataset, seq_len: int) -> Dataset:
     return lm_ds
 
 
+def build_token_stream(tokenizer: Any, ds: Dataset) -> List[int]:
+    """Tokenize dataset into a single token stream with EOS between docs."""
+
+    def tok(examples: Dict[str, List[str]]):
+        return tokenizer(examples["text"], add_special_tokens=False, truncation=False)
+
+    tokenized = ds.map(tok, batched=True, remove_columns=[], desc="Tokenizing (stream)")
+    eos_id = getattr(tokenizer, "eos_token_id", None)
+    if eos_id is None:
+        try:
+            eos_id = tokenizer.convert_tokens_to_ids("</s>")
+        except Exception:
+            eos_id = None
+    if eos_id is None:
+        raise ValueError(
+            "Tokenizer must define eos_token_id to insert EOS between documents."
+        )
+    stream: List[int] = []
+    for ids in tokenized["input_ids"]:
+        if not ids:
+            continue
+        stream.extend(ids)
+        stream.append(eos_id)
+    return stream
+
+
+def build_token_docs(tokenizer: Any, ds: Dataset) -> List[List[int]]:
+    """Tokenize dataset into a list of token lists, one per document (no EOS joins)."""
+
+    def tok(examples: Dict[str, List[str]]):
+        return tokenizer(examples["text"], add_special_tokens=False, truncation=False)
+
+    tokenized = ds.map(tok, batched=True, desc="Tokenizing (per-doc)")
+    input_ids_col = tokenized["input_ids"]
+    # Ensure it's a list of lists of ints
+    docs: List[List[int]] = []
+    for ids in input_ids_col:
+        if ids and isinstance(ids, list):
+            docs.append([int(t) for t in ids])
+        else:
+            docs.append([])
+    return docs
+
+
+def compute_ppl_for_model_sliding(
+    model_path: str,
+    docs_token_ids: List[List[int]],
+    tokenizer: Any,
+    seq_len: int,
+    stride: int,
+    batch_size: int,
+    device: torch.device,
+    drop_first_window: bool = False,
+) -> Dict[str, Any]:
+    """Compute per-document sliding-window perplexity.
+
+    - No EOS between documents.
+    - Score only the last `stride` tokens of each window (or up to L-1 if shorter).
+    - If drop_first_window=True, the first window per document is not scored (n_pred=0).
+    """
+    assert stride > 0 and seq_len > 1 and stride <= seq_len
+    pad_id = getattr(tokenizer, "pad_token_id", None)
+    eos_id = getattr(tokenizer, "eos_token_id", None)
+    if pad_id is None:
+        pad_id = eos_id
+    if pad_id is None:
+        raise ValueError("Tokenizer needs pad_token_id or eos_token_id for padding.")
+
+    dtype = torch.float16 if device.type == "cuda" else torch.float32
+    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=dtype)
+    model = cast(torch.nn.Module, model).to(device)  # type: ignore[call-arg]
+    model.eval()
+
+    # Preflight: validate token ids fit model vocab to avoid device-side asserts
+    try:
+        embed = cast(Any, model).get_input_embeddings()
+        vocab_size = int(embed.num_embeddings)  # type: ignore[attr-defined]
+    except Exception:
+        vocab_size = None  # type: ignore[assignment]
+    if vocab_size is not None:
+        # max/min over docs (fast) rather than scanning every window later
+        max_id = -1
+        min_id = 0
+        for doc in docs_token_ids:
+            if not doc:
+                continue
+            dmax = max(doc)
+            dmin = min(doc)
+            if dmax > max_id:
+                max_id = dmax
+            if dmin < min_id:
+                min_id = dmin
+        if max_id >= vocab_size or min_id < 0:
+            raise ValueError(
+                f"Token id out of range for model vocab: min_id={min_id}, max_id={max_id}, vocab_size={vocab_size}.\n"
+                f"This usually indicates a tokenizer/model mismatch. Ensure --tokenizer_path_or_id matches the model."
+            )
+        # Ensure pad_id is valid; if not, fall back to eos or 0
+        if pad_id is None or pad_id < 0 or pad_id >= vocab_size:
+            fallback = (
+                eos_id if (eos_id is not None and 0 <= eos_id < vocab_size) else 0
+            )
+            print(
+                f"[WARN] pad_token_id {pad_id} invalid for vocab_size {vocab_size}. Falling back to {fallback}."
+            )
+            pad_id = int(fallback)
+
+    total_tokens = 0
+    total_nll = 0.0
+
+    device_type = "cuda" if device.type == "cuda" else "cpu"
+    amp_dtype: Optional[torch.dtype] = torch.float16 if device_type == "cuda" else None
+
+    def make_batch(batch_windows: List[List[int]], batch_npred: List[int]):
+        input_batch: List[List[int]] = []
+        label_batch: List[List[int]] = []
+        attn_batch: List[List[int]] = []
+        for win, n_pred in zip(batch_windows, batch_npred):
+            L = len(win)
+            n_pred = min(n_pred, max(0, L - 1))
+            prefix = L - n_pred
+            labels = ([-100] * prefix) + win[prefix:]
+            attn = [1] * L
+            # pad to seq_len
+            if L < seq_len:
+                pad_len = seq_len - L
+                win = win + [pad_id] * pad_len
+                labels = labels + ([-100] * pad_len)
+                attn = attn + ([0] * pad_len)
+            input_batch.append(win)
+            label_batch.append(labels)
+            attn_batch.append(attn)
+        return (
+            torch.tensor(input_batch, dtype=torch.long),
+            torch.tensor(label_batch, dtype=torch.long),
+            torch.tensor(attn_batch, dtype=torch.long),
+        )
+
+    with torch.no_grad():
+        with torch.autocast(device_type=device_type, dtype=amp_dtype):
+            batch_windows: List[List[int]] = []
+            batch_npred: List[int] = []
+            for doc_ids in docs_token_ids:
+                if not doc_ids:
+                    continue
+                idx = 0
+                first = True
+                end_limit = len(doc_ids)
+                while idx < end_limit - 1:
+                    end = min(idx + seq_len, end_limit)
+                    win = doc_ids[idx:end]
+                    n_pred = (
+                        0
+                        if (first and drop_first_window)
+                        else min(stride, max(0, len(win) - 1))
+                    )
+                    batch_windows.append(win)
+                    batch_npred.append(n_pred)
+                    if len(batch_windows) == batch_size:
+                        tokens_this = sum(batch_npred)
+                        if tokens_this > 0:
+                            input_ids, labels, attn = make_batch(
+                                batch_windows, batch_npred
+                            )
+                            input_ids = input_ids.to(device)
+                            labels = labels.to(device)
+                            attn = attn.to(device)
+                            outputs = cast(Any, model)(
+                                input_ids=input_ids, attention_mask=attn, labels=labels
+                            )
+                            loss = float(outputs.loss.item())
+                            total_tokens += tokens_this
+                            total_nll += loss * tokens_this
+                        batch_windows = []
+                        batch_npred = []
+                    idx += stride
+                    first = False
+            # flush remaining
+            if batch_windows:
+                tokens_this = sum(batch_npred)
+                if tokens_this > 0:
+                    input_ids, labels, attn = make_batch(batch_windows, batch_npred)
+                    input_ids = input_ids.to(device)
+                    labels = labels.to(device)
+                    attn = attn.to(device)
+                    outputs = cast(Any, model)(
+                        input_ids=input_ids, attention_mask=attn, labels=labels
+                    )
+                    loss = float(outputs.loss.item())
+                    total_tokens += tokens_this
+                    total_nll += loss * tokens_this
+
+    if total_tokens == 0:
+        return {"tokens": 0, "avg_nll": float("nan"), "perplexity": float("nan")}
+    avg_nll = total_nll / total_tokens
+    ppl = math.exp(avg_nll)
+    return {"tokens": total_tokens, "avg_nll": avg_nll, "perplexity": ppl}
+
+
 def _list_checkpoints(model_path: str) -> List[Dict[str, Any]]:
     """Return list of dicts with path and step for base model and its checkpoints (if any).
 
@@ -245,27 +474,44 @@ def main():
     print(f"Loading tokenizer from: {tok_src}")
     tokenizer = AutoTokenizer.from_pretrained(tok_src, use_fast=True)
 
-    print("Packing dataset into fixed-length blocks...")
-    ds = tokenize_and_group(tokenizer, raw, args.seq_len)
-    print(f"Blocks for eval: {len(ds):,} (block size={args.seq_len})")
+    use_sliding = (
+        args.stride is not None and args.stride > 0 and args.stride <= args.seq_len
+    )
+    if use_sliding:
+        print(
+            f"Tokenizing per-document for sliding-window eval (no EOS joins) (seq_len={args.seq_len}, stride={args.stride}, drop_first_window={args.drop_first_window})..."
+        )
+        token_docs = build_token_docs(tokenizer, raw)
+        total_tokens_docs = sum(len(x) for x in token_docs)
+        print(f"Docs: {len(token_docs):,}, total doc tokens: {total_tokens_docs:,}")
+    else:
+        print("Packing dataset into fixed-length blocks...")
+        ds = tokenize_and_group(tokenizer, raw, args.seq_len)
+        print(f"Blocks for eval: {len(ds):,} (block size={args.seq_len})")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    dl = DataLoader(  # type: ignore[arg-type]
-        ds,  # type: ignore
-        batch_size=args.per_device_eval_batch_size,
-        shuffle=False,
-        collate_fn=default_data_collator,
-        pin_memory=(device.type == "cuda"),
-        num_workers=2,
-    )
+    dl = None
+    if not use_sliding:
+        dl = DataLoader(  # type: ignore[arg-type]
+            ds,  # type: ignore
+            batch_size=args.per_device_eval_batch_size,
+            shuffle=False,
+            collate_fn=default_data_collator,
+            pin_memory=(device.type == "cuda"),
+            num_workers=2,
+        )
 
     # Decide evaluation targets: single model or all checkpoints
     targets = _list_checkpoints(args.model_path_or_id)
     model_name = _model_name_from_path_or_id(args.model_path_or_id)
 
     # Optional Weights & Biases logging
-    report_to = os.environ.get("EVAL_REPORT_TO", "none").lower()
+    report_to = (
+        args.report_to.lower()
+        if args.report_to
+        else os.environ.get("EVAL_REPORT_TO", "none").lower()
+    )
     use_wandb = report_to == "wandb"
     wandb = None
     if use_wandb:
@@ -273,8 +519,8 @@ def main():
             import wandb as _wandb  # type: ignore
 
             wandb = _wandb
-            proj = os.environ.get("WANDB_PROJECT", "EvalLM")
-            run_name = f"eval-ppl-{model_name}"
+            proj = args.wandb_project or os.environ.get("WANDB_PROJECT", "EvalLM")
+            run_name = args.wandb_run_name or model_name
             wandb.init(
                 project=proj,
                 name=run_name,
@@ -283,6 +529,8 @@ def main():
                     "data_dirs": data_dirs,
                     "seq_len": args.seq_len,
                     "batch_size": args.per_device_eval_batch_size,
+                    "stride": args.stride,
+                    "drop_first_window": args.drop_first_window,
                 },
             )
         except Exception as e:
@@ -299,7 +547,20 @@ def main():
         step = item["step"]
         label = "final" if step is None else f"step-{step}"
         print(f"\n[Eval] {label}: {ckpt_path}")
-        metrics = compute_ppl_for_model(ckpt_path, dl, device)
+        if use_sliding:
+            metrics = compute_ppl_for_model_sliding(
+                ckpt_path,
+                token_docs,  # type: ignore[arg-type]
+                tokenizer,
+                args.seq_len,
+                cast(int, args.stride),
+                args.per_device_eval_batch_size,
+                device,
+                drop_first_window=args.drop_first_window,
+            )
+        else:
+            assert dl is not None
+            metrics = compute_ppl_for_model(ckpt_path, dl, device)
         result = {
             "checkpoint": ckpt_path,
             "label": label,
