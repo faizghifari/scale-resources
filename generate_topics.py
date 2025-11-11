@@ -1,4 +1,4 @@
-"""Seed topic expansion pipeline using OpenRouter via the OpenAI SDK.
+"""Seed topic expansion pipeline using OpenRouter or self-hosted vLLM via the OpenAI SDK.
 
 This script reads seed topics from a plain-text file, generates a fixed number
 of subtopics for each seed topic, and then expands every subtopic into a set of
@@ -14,9 +14,20 @@ Usage example:
         --topic-concurrency 4 \
         --request-concurrency 16
 
-The script expects an ``OPENROUTER_API_KEY`` entry inside ``.env`` (or already
-available in the environment). The OpenRouter ``x-ai/grok-4-fast`` model is
-used through the official OpenAI Python SDK for compatibility.
+To use a local vLLM deployment instead of OpenRouter:
+
+    python generate_topics.py \
+        --model-source vllm \
+        --api-base http://localhost:8000/v1 \
+        --api-key token-abc123 \
+        --model NousResearch/Meta-Llama-3-8B-Instruct
+
+By default the script targets the OpenRouter ``qwen/qwen3-235b-a22b:free``
+model and expects an ``OPENROUTER_API_KEY`` entry inside ``.env`` (or already
+available in the environment). Alternate backends such as a self-hosted vLLM
+instance can be selected via command-line flags that set the base URL, API key,
+and model identifier. When targeting vLLM, you may set ``VLLM_API_KEY`` or pass
+``--api-key`` (defaulting to ``token-abc123`` if not provided).
 """
 
 from __future__ import annotations
@@ -26,8 +37,8 @@ import asyncio
 import json
 import os
 import random
-from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence, cast
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence, cast
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -39,7 +50,8 @@ DEFAULT_QUESTIONS_PER_SUBTOPIC = 30
 DEFAULT_TOPIC_CONCURRENCY = 1
 DEFAULT_REQUEST_CONCURRENCY = 30
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-MODEL_NAME = "qwen/qwen3-235b-a22b:free"
+DEFAULT_VLLM_BASE_URL = "http://localhost:8000/v1"
+DEFAULT_MODEL_NAME = "qwen/qwen3-235b-a22b:free"
 
 
 @dataclass
@@ -54,6 +66,8 @@ class GenerationConfig:
     request_delay: float = 0.0
     request_concurrency: int = DEFAULT_REQUEST_CONCURRENCY
     topic_concurrency: int = DEFAULT_TOPIC_CONCURRENCY
+    model: str = DEFAULT_MODEL_NAME
+    extra_body: Dict[str, Any] = field(default_factory=dict)
 
 
 def load_seed_topics(path: str) -> List[str]:
@@ -152,12 +166,13 @@ async def chat_completion(
         try:
             async with request_semaphore:
                 response = await client.chat.completions.create(
-                    model=MODEL_NAME,
+                    model=cfg.model,
                     messages=list(messages),
                     temperature=cfg.temperature,
                     top_p=cfg.top_p,
                     max_tokens=max_tokens,
-                    extra_body={"reasoning": {"enabled": False}},
+                    reasoning_effort="low",
+                    extra_body=cfg.extra_body or None,
                 )
             if cfg.request_delay:
                 await asyncio.sleep(cfg.request_delay)
@@ -411,19 +426,50 @@ def parse_args() -> argparse.Namespace:
         "--request-concurrency",
         type=int,
         default=DEFAULT_REQUEST_CONCURRENCY,
-        help="Maximum number of simultaneous OpenRouter requests.",
+        help="Maximum number of simultaneous API requests.",
+    )
+    parser.add_argument(
+        "--model-source",
+        choices=["openrouter", "vllm"],
+        default="openrouter",
+        help="Model backend to target (OpenRouter or self-hosted vLLM).",
+    )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL_NAME,
+        help="Model identifier to request from the selected backend.",
+    )
+    parser.add_argument(
+        "--api-base",
+        help="Override the API base URL for the selected backend.",
+    )
+    parser.add_argument(
+        "--api-key",
+        help="Override the API key/token for the selected backend.",
+    )
+    parser.add_argument(
+        "--extra-body",
+        help="Optional JSON string merged into the OpenAI extra_body payload.",
     )
     return parser.parse_args()
 
 
-def build_client() -> AsyncOpenAI:
+def build_client(args: argparse.Namespace) -> AsyncOpenAI:
     load_dotenv()
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "OPENROUTER_API_KEY is missing. Please set it in .env or the environment."
-        )
-    return AsyncOpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL)
+    source = args.model_source
+
+    if source == "openrouter":
+        base_url = args.api_base or OPENROUTER_BASE_URL
+        api_key = args.api_key or os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "OPENROUTER_API_KEY is missing. Provide --api-key or set it in the environment."
+            )
+    else:
+        base_url = args.api_base or DEFAULT_VLLM_BASE_URL
+        api_key = args.api_key or os.getenv("VLLM_API_KEY") or "token-abc123"
+
+    return AsyncOpenAI(api_key=api_key, base_url=base_url)
 
 
 async def process_topic(
@@ -450,13 +496,31 @@ async def process_topic(
         ]
         question_results = await asyncio.gather(*question_tasks, return_exceptions=True)
 
+        successful_subtopics: List[str] = []
         questions_bundle: List[List[str]] = []
-        for result in question_results:
-            if isinstance(result, BaseException):
-                raise result
-            questions_bundle.append(cast(List[str], result))
+        subtopic_failures: List[tuple[str, str]] = []
 
-        record = build_topic_record(topic, subtopics, questions_bundle)
+        for subtopic, result in zip(subtopics, question_results):
+            if isinstance(result, BaseException):
+                subtopic_failures.append((subtopic, str(result)))
+                continue
+            questions_bundle.append(cast(List[str], result))
+            successful_subtopics.append(subtopic)
+
+        if not successful_subtopics:
+            error_reason = subtopic_failures[-1][1] if subtopic_failures else "unknown"
+            raise RuntimeError(
+                f"All subtopics failed for '{topic}'. Last error: {error_reason}"
+            )
+
+        if subtopic_failures:
+            summary = "; ".join(f"{name}: {err}" for name, err in subtopic_failures[:3])
+            async with progress_lock:
+                progress_bar.write(
+                    f"Topic '{topic}' skipped {len(subtopic_failures)} subtopics due to errors: {summary}"
+                )
+
+        record = build_topic_record(topic, successful_subtopics, questions_bundle)
 
         async with records_lock:
             records[topic] = record
@@ -498,7 +562,7 @@ async def run_pipeline(args: argparse.Namespace, cfg: GenerationConfig) -> None:
     if records:
         tqdm.write(f"Resuming from existing JSON with {len(records)} completed topics.")
 
-    client = build_client()
+    client = build_client(args)
     request_semaphore = asyncio.Semaphore(max(1, cfg.request_concurrency))
     topic_semaphore = asyncio.Semaphore(max(1, cfg.topic_concurrency))
     records_lock = asyncio.Lock()
@@ -536,6 +600,18 @@ async def run_pipeline(args: argparse.Namespace, cfg: GenerationConfig) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.extra_body:
+        try:
+            extra_body = json.loads(args.extra_body)
+        except json.JSONDecodeError as exc:  # noqa: BLE001
+            raise SystemExit(f"Invalid JSON for --extra-body: {exc}") from exc
+        if not isinstance(extra_body, dict):
+            raise SystemExit("--extra-body must be a JSON object")
+    elif args.model_source == "openrouter":
+        extra_body = {"reasoning": {"enabled": False}}
+    else:
+        extra_body = {}
+
     cfg = GenerationConfig(
         subtopics_per_topic=args.subtopics_per_topic,
         questions_per_subtopic=args.questions_per_subtopic,
@@ -545,6 +621,8 @@ def main() -> None:
         request_delay=args.request_delay,
         request_concurrency=args.request_concurrency,
         topic_concurrency=args.topic_concurrency,
+        model=args.model,
+        extra_body=extra_body,
     )
 
     try:
