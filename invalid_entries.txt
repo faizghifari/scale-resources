@@ -1,0 +1,69 @@
+Invalid dictionary entries:
+- ampok-ampok
+- anyar-anyar
+- bacana
+- beten
+- bukit
+- candi kurung
+- cicing medemin jalikan
+- cunguh
+- dadap
+- dakangan
+- don sotong
+- dulang
+- emplegan
+- entud
+- gandrung
+- gedog
+- gedogan
+- gegendong
+- guru
+- ibingan
+- ija
+- jambul
+- jriji
+- kabanda
+- kalaksanayang
+- kanggeang
+- kayu manis
+- kedongdong
+- klabang dangap-dangap
+- klambi
+- kuangan
+- kuping
+- lacur
+- leb
+- lima
+- manresti
+- masatia
+- metatah
+- mulisah
+- ngadu
+- ngaukin
+- ngayah
+- ngijengin
+- nudut
+- paa
+- padamel
+- paid
+- pala
+- panyingakan
+- paridan
+- pasapuh
+- pejati
+- pengku
+- posyandu
+- pucak
+- sami
+- sarira
+- selae
+- semara
+- seret
+- sesangi
+- somah
+- tajen
+- taji
+- telah
+- udeng
+- ulu candra
+- wimba

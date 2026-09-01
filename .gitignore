@@ -175,6 +175,10 @@ cython_debug/
 
 # ignore txt files
 *.txt
+!seed_topics_first_1000.txt
+!to_filter.txt
+!invalid_entries.txt
+!instruction.txt
 
 # ignore jsonl files
 *.jsonl
@@ -188,5 +192,6 @@ wandb/
 eval*/
 batches/
 autoresearch/
+metrics/
 
 generated_topics.json
