@@ -187,5 +187,6 @@ unsloth*/
 wandb/
 eval*/
 batches/
+autoresearch/
 
 generated_topics.json
