@@ -1,3 +1,0 @@
-- language identification
-- token/word repetition
-- unrealistic token that has too many chars (like more than 50 for one token/word)
