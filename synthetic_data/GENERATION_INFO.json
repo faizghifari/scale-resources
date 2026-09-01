@@ -3,7 +3,7 @@
   "_layout_note": "As of 2026-09-01 this manifest and everything it describes (seeds, raw per-topic shards) live under synthetic_data/ at the repo root -- see the paths below. synthetic_data/raw/ and synthetic_data/seeds/generated_topics.json are gitignored (bulk data); this file and synthetic_data/seeds/seed_topics_first_1000.txt are tracked.",
   "_prompts_note": "As of 2026-09-01 all system prompts and the translation instruction (reproduced in the 'system_prompt'/'prompt_template' fields below for quick reference) are centralized in src/scaleres/generation/prompts.py -- that module is the source of truth, this file is documentation of it.",
   "canonical_output": {
-    "path": "dataset/synthetic_gen_parallel_subsets",
+    "path": "dataset/parallel/synthetic",
     "splits": {
       "raw": "2,196,290 rows, id/indonesian/balinese/cirebonese",
       "filtered_heuristic": "LID-filtered subset of raw, rebuilt by refresh_filtered_subset.py"
@@ -45,14 +45,14 @@
     },
     {
       "stage": "4. packing",
-      "script": "python -m scaleres.dataprep.build_parallel_hf_dataset --topics-dir synthetic_data/raw/translations --output-dir dataset/synthetic_gen_parallel_subsets/raw",
+      "script": "python -m scaleres.dataprep.build_parallel_hf_dataset --topics-dir synthetic_data/raw/translations --output-dir dataset/parallel/synthetic/raw",
       "filters_applied": "optional --balinese-clean/--cirebonese-clean id allowlists from metrics/cache/{lang}/translations_clean.jsonl (produced by scaleres.dataprep.clean_translations)",
       "dedup": "by id, drops rows with any empty indonesian/balinese/cirebonese field",
       "built_2025-12-09": "2,196,290 rows"
     },
     {
       "stage": "5. heuristic filtering",
-      "script": "python -m scaleres.dataprep.refresh_filtered_subset --dataset-dir dataset/synthetic_gen_parallel_subsets",
+      "script": "python -m scaleres.dataprep.refresh_filtered_subset --dataset-dir dataset/parallel/synthetic",
       "method": "GlotLID language-identification pass (models/glotlid/model.bin) per language, keeps rows where both balinese and cirebonese pass",
       "output_split": "filtered_heuristic"
     },
@@ -63,8 +63,8 @@
     }
   ],
   "known_live_downstream_consumer": {
-    "path": "dataset/synthetic_gen_parallel_clean/clean_v1",
-    "note": "Not produced by any script in this repo's history -- built ad hoc (Aug 2026) from synthetic_gen_parallel_subsets for the autoresearch/ SAE-gap research program, which reads it from ~15 experiment scripts. Do not delete or rebuild without checking autoresearch/ first."
+    "path": "dataset/parallel/synthetic_clean/clean_v1",
+    "note": "Not produced by any script in this repo's history -- built ad hoc (Aug 2026) from dataset/parallel/synthetic (formerly dataset/synthetic_gen_parallel_subsets, renamed 2026-09-01) for the autoresearch/ SAE-gap research program, which reads it from ~15 experiment scripts. Do not delete or rebuild without checking autoresearch/ first."
   },
   "manifest_written": "2026-09-01",
   "manifest_written_by": "workspace refactor session (see auto-memory workspace-refactor-2026-09)"
