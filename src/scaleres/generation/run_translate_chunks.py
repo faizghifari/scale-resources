@@ -141,13 +141,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input-dir",
         type=Path,
-        default=Path("topic_answers"),
+        default=Path("synthetic_data/raw/answers"),
         help="Directory containing per-topic answer JSONL files.",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("topic_translations"),
+        default=Path("synthetic_data/raw/translations"),
         help="Directory where translation outputs should be written.",
     )
     parser.add_argument(

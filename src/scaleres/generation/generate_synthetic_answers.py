@@ -443,13 +443,13 @@ def parse_args() -> argparse.Namespace:
     parent.add_argument(
         "--input",
         type=Path,
-        default=Path("generated_topics.json"),
+        default=Path("synthetic_data/seeds/generated_topics.json"),
         help="Path to the JSON file containing topics, subtopics, and questions.",
     )
     parent.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("topic_answers"),
+        default=Path("synthetic_data/raw/answers"),
         help="Directory to store per-topic answer JSONL files.",
     )
     parent.add_argument(

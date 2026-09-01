@@ -810,19 +810,19 @@ def parse_args() -> argparse.Namespace:
     parent.add_argument(
         "--input-dir",
         type=Path,
-        default=Path("topic_answers"),
+        default=Path("synthetic_data/raw/answers"),
         help="Directory containing per-topic answer JSONL files to translate.",
     )
     parent.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("topic_translations"),
+        default=Path("synthetic_data/raw/translations"),
         help="Directory to store per-topic translation JSONL files.",
     )
     parent.add_argument(
         "--instruction-path",
         type=Path,
-        default=Path("instruction.txt"),
+        default=Path("synthetic_data/instruction.txt"),
         help="File containing the translation instruction template.",
     )
     parent.add_argument(

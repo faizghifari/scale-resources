@@ -22,7 +22,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Clean synthetic translation corpora")
     parser.add_argument("--lang", choices=sorted(LANG_CONFIGS.keys()), required=True)
     parser.add_argument(
-        "--translations-dir", type=Path, default=Path("topic_translations")
+        "--translations-dir", type=Path, default=Path("synthetic_data/raw/translations")
     )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(

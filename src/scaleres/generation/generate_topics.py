@@ -347,12 +347,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--input",
-        default="seed_topics_first_1000.txt",
+        default="synthetic_data/seeds/seed_topics_first_1000.txt",
         help="Path to plaintext file containing one seed topic per line.",
     )
     parser.add_argument(
         "--output",
-        default="generated_topics.json",
+        default="synthetic_data/seeds/generated_topics.json",
         help="Destination JSON file for storing generations.",
     )
     parser.add_argument(

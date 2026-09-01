@@ -134,7 +134,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Build HF-style parallel dataset from topic_translations JSONLs"
     )
-    parser.add_argument("--topics-dir", type=Path, default=Path("topic_translations"))
+    parser.add_argument("--topics-dir", type=Path, default=Path("synthetic_data/raw/translations"))
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
         "--balinese-clean",
