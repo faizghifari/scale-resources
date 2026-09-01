@@ -6,17 +6,12 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from pathlib import Path
-import sys
 from typing import Dict, List, Sequence, Tuple
 
 from datasets import Dataset, DatasetDict, load_from_disk
 from tqdm import tqdm
 
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from scripts.quality_utils import (
+from .quality_utils import (
     LANG_CONFIGS,
     GlotLanguageIdentifier,
     LangConfig,
