@@ -3,8 +3,8 @@ set -euo pipefail
 
 # === Configuration ==========================================================
 HF_PATHS=(
-  "dataset/synthetic_gen_parallel_subsets"
-  "dataset/paralel_3_lang/combined_paralel_dataset_705k_dedup_clean_filtered-id"
+  "dataset/parallel/synthetic"
+  "dataset/parallel/3lang/combined_705k_dedup_clean_filtered-id"
 )
 
 LANGS=(balinese cirebonese)

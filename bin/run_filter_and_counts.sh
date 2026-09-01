@@ -5,7 +5,7 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VENV_PY="$ROOT_DIR/.venv/bin/python"
-DATA_DIR="$ROOT_DIR/dataset/synthetic_gen_parallel_subsets"
+DATA_DIR="$ROOT_DIR/dataset/parallel/synthetic"
 LID_MODEL="$ROOT_DIR/models/glotlid/model.bin"
 
 if [[ ! -x "$VENV_PY" ]]; then
@@ -36,7 +36,7 @@ def get_encoding():
     except KeyError:
         return tiktoken.get_encoding("cl100k_base")
 
-data_path = Path('dataset/synthetic_gen_parallel_subsets')
+data_path = Path('dataset/parallel/synthetic')
 ds = load_from_disk(str(data_path))
 filtered = ds['filtered_heuristic']
 enc = get_encoding()

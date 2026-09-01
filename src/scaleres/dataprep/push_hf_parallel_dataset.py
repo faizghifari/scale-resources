@@ -13,7 +13,7 @@ from huggingface_hub import HfApi
 
 
 REPO_ID = "haznitrama/idn-ban-cbn-synthetic"
-DATASET_DIR = Path("dataset/synthetic_gen_parallel_subsets")
+DATASET_DIR = Path("dataset/parallel/synthetic")
 
 
 MODEL_CARD = """---

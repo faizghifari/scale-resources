@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-dir",
         type=Path,
-        default=Path("dataset/synthetic_gen_parallel_subsets"),
+        default=Path("dataset/parallel/synthetic"),
         help="Path to the existing DatasetDict containing 'raw' and 'filtered_heuristic' splits.",
     )
     parser.add_argument(
