@@ -4,16 +4,15 @@
 This refactor removes the legacy OpenAI Batch workflow and replaces it with a
 fully asynchronous pipeline that talks directly to a vLLM server. The script
 uses two layers of concurrency (topic-level and request-level) mirroring the
-``generate_topics.py`` design, skips questions that were already answered in
-previous batch runs, and emits JSONL outputs per topic that remain compatible
-with ``scaleres.dataprep.create_synthetic_dataset``.
+``generate_topics.py`` design and skips questions that were already answered
+in previous runs.
 
 Typical usages::
 
     # Generate answers for all remaining questions and store per-topic JSONL
     python -m scaleres.generation.generate_synthetic_answers generate \
-        --input generated_topics.json \
-        --output-dir topic_answers \
+        --input synthetic_data/seeds/generated_topics.json \
+        --output-dir synthetic_data/raw/answers \
         --request-concurrency 64 \
         --topic-concurrency 4 \
         --api-base http://localhost:8000/v1 \
@@ -22,10 +21,8 @@ Typical usages::
     # Run a quick concurrent sample without writing outputs
     python -m scaleres.generation.generate_synthetic_answers sample --count 3
 
-The script automatically loads existing batch request JSONL files listed in
-``batches/.submitted_batches`` (and any legacy results) to avoid re-processing
-questions that were already handled. Existing per-topic output files produced by
-this script are also respected, enabling resumable executions.
+Existing per-topic output files produced by this script are respected,
+enabling resumable executions.
 """
 
 from __future__ import annotations
@@ -44,13 +41,11 @@ from openai.types.chat import ChatCompletion
 from tqdm import tqdm
 
 from scaleres.common.jsonl_io import (
-    JSONL_SUFFIX,
     append_jsonl,
     ensure_directory,
     load_aggregate_ids,
     load_existing_output_ids,
     load_existing_topic_ids,
-    read_custom_ids_from_jsonl,
     topic_output_path as _topic_output_path,
 )
 from scaleres.common.llm_client import (
@@ -132,39 +127,6 @@ def load_topics(input_path: Path) -> List[TopicBundle]:
                 TopicBundle(index=topic_idx, title=topic_title, questions=questions)
             )
     return bundles
-
-
-def load_submitted_custom_ids(batches_dir: Path, submitted_path: Path) -> Set[str]:
-    if not submitted_path.exists() or not batches_dir.exists():
-        return set()
-
-    submitted_ids: Set[str] = set()
-    entries = [
-        line.strip()
-        for line in submitted_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    for entry in entries:
-        candidate_paths: List[Path]
-        if entry.endswith(JSONL_SUFFIX):
-            candidate = batches_dir / entry
-            candidate_paths = [candidate]
-        else:
-            candidate_paths = sorted(batches_dir.glob(f"{entry}*{JSONL_SUFFIX}"))
-        for candidate in candidate_paths:
-            if candidate.exists():
-                submitted_ids.update(read_custom_ids_from_jsonl(candidate))
-                break
-    return submitted_ids
-
-
-def load_legacy_result_ids(results_dir: Path) -> Set[str]:
-    if not results_dir.exists():
-        return set()
-    ids: Set[str] = set()
-    for path in sorted(results_dir.glob(f"*{JSONL_SUFFIX}")):
-        ids.update(read_custom_ids_from_jsonl(path))
-    return ids
 
 
 def build_client(args: argparse.Namespace) -> AsyncOpenAI:
@@ -295,10 +257,6 @@ async def process_topic(
 
 def gather_skip_ids(args: argparse.Namespace, output_dir: Path) -> Set[str]:
     skip_ids: Set[str] = set()
-    skip_ids.update(
-        load_submitted_custom_ids(args.legacy_batches_dir, args.submitted_batches)
-    )
-    skip_ids.update(load_legacy_result_ids(args.legacy_results_dir))
     skip_ids.update(load_existing_output_ids(output_dir))
     skip_ids.update(load_aggregate_ids(args.aggregate_answers))
     return skip_ids
@@ -508,24 +466,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_REQUEST_CONCURRENCY,
         help="Maximum number of in-flight chat completion requests.",
-    )
-    parent.add_argument(
-        "--submitted-batches",
-        type=Path,
-        default=Path("batches/.submitted_batches"),
-        help="File listing batch identifiers that have already been processed.",
-    )
-    parent.add_argument(
-        "--legacy-batches-dir",
-        type=Path,
-        default=Path("batches"),
-        help="Directory containing legacy batch request JSONL files.",
-    )
-    parent.add_argument(
-        "--legacy-results-dir",
-        type=Path,
-        default=Path("batches/results"),
-        help="Directory containing legacy batch output JSONL files.",
     )
     parent.add_argument(
         "--aggregate-answers",
