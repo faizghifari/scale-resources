@@ -1,6 +1,6 @@
 CUDA_VISIBLE_DEVICES=0 python -m scaleres.training.sft_unsloth \
     --model_id models/Bali/instruct/BaliQwen-3B-base-instruct_en \
-    --dataset_dir dataset/ift/bali_ift_6k/ \
+    --dataset_dir dataset/ift/ban_ift_6k/ \
     --project_name BaliQwen-3B-base-instruct_en_ban \
     --run_name epoch-1-bs-1-20250424 \
     --batch_size 1 \
@@ -16,7 +16,7 @@ CUDA_VISIBLE_DEVICES=0 python -m scaleres.training.merge_lora \
 
 CUDA_VISIBLE_DEVICES=0 python -m scaleres.training.sft_unsloth \
     --model_id models/Bali/instruct/BaliQwen-3B-HQ-instruct_en \
-    --dataset_dir dataset/ift/bali_ift_6k/ \
+    --dataset_dir dataset/ift/ban_ift_6k/ \
     --project_name BaliQwen-3B-HQ-instruct_en_ban \
     --run_name epoch-1-bs-1-20250424 \
     --batch_size 1 \
