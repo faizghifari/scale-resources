@@ -53,7 +53,7 @@ run_for_lang() {
   before=$(count_docs "$out_json")
   echo "[loop] Starting ${lang}; already have ${before} docs processed"
 
-  local cmd=(python -m scripts.compute_s_lexicon --lang "$lang" --hf)
+  local cmd=(python -m scaleres.dataprep.compute_s_lexicon --lang "$lang" --hf)
   cmd+=("${HF_PATHS[@]}" --output-doc "$out_json" --plot "$out_plot" --num-workers "$NUM_WORKERS" --chunksize "$CHUNKSIZE" --resume)
   if [[ -n "$MAX_DOCS" ]]; then
     cmd+=(--max-docs "$MAX_DOCS")

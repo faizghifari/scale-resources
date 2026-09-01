@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Rebuild filtered_heuristic with current heuristics and report Balinese/Cirebonese token counts.
-# Usage: bash scripts/run_filter_and_counts.sh
+# Usage: bash bin/run_filter_and_counts.sh
 
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,7 +21,7 @@ fi
 cd "$ROOT_DIR"
 
 echo "[1/2] Rebuilding filtered_heuristic..."
-"$VENV_PY" scripts/refresh_filtered_subset.py --lid-model "$LID_MODEL"
+"$VENV_PY" -m scaleres.dataprep.refresh_filtered_subset --lid-model "$LID_MODEL"
 
 echo "[2/2] Computing token totals (Balinese, Cirebonese)..."
 "$VENV_PY" - <<'PY'

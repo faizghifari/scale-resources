@@ -1,22 +1,29 @@
-import os
-import torch
-import argparse
+#!/usr/bin/env python
+"""Merge a trained PEFT/LoRA adapter into its base model and save the result.
 
-from peft import PeftModel, PeftConfig
+Renamed from the repo-root ``merge.py`` (moved here, next to the CPT/SFT
+scripts that produce the adapters it merges) -- this is a post-training step,
+not data preparation.
+"""
+
+import argparse
+import os
+
+import torch
+from peft import PeftConfig, PeftModel
 from transformers import (
+    AutoModelForCausalLM,
     AutoProcessor,
     AutoTokenizer,
-    AutoModelForCausalLM,
     Gemma3ForConditionalGeneration,
 )
 
 
-def load_model(model_name):
-    # Load model and processor
+def load_model(model_name: str):
     if "gemma-3" in model_name:
         model = Gemma3ForConditionalGeneration.from_pretrained(
             model_name,
-            device_map={"": 0},  # Explicitly map to GPU 0
+            device_map={"": 0},
             torch_dtype=torch.bfloat16,
             tie_word_embeddings=False,
         )
@@ -24,7 +31,7 @@ def load_model(model_name):
     else:
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            device_map={"": 0},  # Explicitly map to GPU 0
+            device_map={"": 0},
             torch_dtype=torch.bfloat16,
             tie_word_embeddings=False,
         )
@@ -33,15 +40,18 @@ def load_model(model_name):
     return model, processor
 
 
-parser = argparse.ArgumentParser(description="Merge model and processor/tokenizer")
-parser.add_argument("--model_file", type=str, help="Path to model file", required=True)
-parser.add_argument("--lora_file", type=str, help="Path to lora file", required=True)
-parser.add_argument(
-    "--output_dir", help="path to the output directory", required=True, type=str
-)
-args = parser.parse_args()
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Merge model and processor/tokenizer")
+    parser.add_argument("--model_file", type=str, help="Path to model file", required=True)
+    parser.add_argument("--lora_file", type=str, help="Path to lora file", required=True)
+    parser.add_argument(
+        "--output_dir", help="path to the output directory", required=True, type=str
+    )
+    return parser.parse_args()
 
-if __name__ == "__main__":
+
+def main() -> None:
+    args = parse_args()
     peft_model_id = args.lora_file
     config = PeftConfig.from_pretrained(peft_model_id)
 
@@ -54,3 +64,7 @@ if __name__ == "__main__":
 
     merged_model.save_pretrained(args.output_dir)
     processor.save_pretrained(args.output_dir)
+
+
+if __name__ == "__main__":
+    main()

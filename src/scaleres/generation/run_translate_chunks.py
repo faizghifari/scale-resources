@@ -5,7 +5,7 @@ This helper prevents loading every topic JSONL file at once by invoking the
 translator repeatedly with a bounded ``--topic-limit``. A typical call processes
 100 topic shards per step::
 
-    python run_translate_chunks.py --chunk-size 100 -- \
+    python -m scaleres.generation.run_translate_chunks --chunk-size 100 -- \
         --api-base http://localhost:8000/v1 --model gpt-oss-120b
 
 All arguments after ``--`` are forwarded directly to ``translate_answers.py``.
@@ -15,14 +15,15 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 import subprocess
 import sys
 from pathlib import Path
-import re
 from typing import Iterable, List
 
 JSONL_SUFFIX = ".jsonl"
 TOPIC_PATTERN = re.compile(r"topic(\d{4})" + re.escape(JSONL_SUFFIX) + "$")
+DEFAULT_TRANSLATOR_MODULE = "scaleres.generation.translate_answers"
 
 
 def discover_topic_indices(
@@ -50,7 +51,7 @@ def chunk_indices(indices: List[int], chunk_size: int) -> Iterable[List[int]]:
 
 
 def build_command(
-    translator_path: Path,
+    translator_module: str,
     input_dir: Path,
     output_dir: Path,
     chunk: List[int],
@@ -62,7 +63,8 @@ def build_command(
     limit = len(chunk)
     cmd = [
         sys.executable,
-        str(translator_path),
+        "-m",
+        translator_module,
         "translate",
         "--input-dir",
         str(input_dir),
@@ -81,13 +83,10 @@ def build_command(
 def run_chunks(args: argparse.Namespace) -> None:
     input_dir = args.input_dir
     output_dir = args.output_dir
-    translator_path = args.translator_path
     chunk_size = args.chunk_size
 
     if chunk_size <= 0:
         raise SystemExit("--chunk-size must be a positive integer")
-    if not translator_path.exists():
-        raise SystemExit(f"Translator script not found: {translator_path}")
     if not input_dir.exists():
         raise SystemExit(f"Input directory not found: {input_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -108,7 +107,9 @@ def run_chunks(args: argparse.Namespace) -> None:
     )
 
     for chunk_idx, chunk in enumerate(chunk_indices(indices, chunk_size), start=1):
-        cmd = build_command(translator_path, input_dir, output_dir, chunk, extra_args)
+        cmd = build_command(
+            args.translator_module, input_dir, output_dir, chunk, extra_args
+        )
         start_idx = chunk[0]
         end_idx = chunk[-1]
         print(
@@ -132,10 +133,10 @@ def parse_args() -> argparse.Namespace:
         allow_abbrev=False,
     )
     parser.add_argument(
-        "--translator-path",
-        type=Path,
-        default=Path("translate_answers.py"),
-        help="Path to translate_answers.py (default: translate_answers.py in CWD).",
+        "--translator-module",
+        type=str,
+        default=DEFAULT_TRANSLATOR_MODULE,
+        help="Module to invoke via `python -m` (default: scaleres.generation.translate_answers).",
     )
     parser.add_argument(
         "--input-dir",

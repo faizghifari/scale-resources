@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=0 python sft_unsloth.py \
+CUDA_VISIBLE_DEVICES=0 python -m scaleres.training.sft_unsloth \
     --model_id models/Bali/instruct/BaliQwen-3B-base-instruct_en \
     --dataset_dir dataset/ift/bali_ift_6k/ \
     --project_name BaliQwen-3B-base-instruct_en_ban \
@@ -9,12 +9,12 @@ CUDA_VISIBLE_DEVICES=0 python sft_unsloth.py \
     --device_id 0 \
     --output_dir models/Bali/instruct/BaliQwen-3B-base-instruct_en_ban
 
-CUDA_VISIBLE_DEVICES=0 python merge.py \
+CUDA_VISIBLE_DEVICES=0 python -m scaleres.training.merge_lora \
     --model_file models/Bali/instruct/BaliQwen-3B-base-instruct_en \
     --lora_file models/Bali/instruct/BaliQwen-3B-base-instruct_en_ban \
     --output_dir models/Bali/instruct/BaliQwen-3B-base-instruct_en_ban-merged \
 
-CUDA_VISIBLE_DEVICES=0 python sft_unsloth.py \
+CUDA_VISIBLE_DEVICES=0 python -m scaleres.training.sft_unsloth \
     --model_id models/Bali/instruct/BaliQwen-3B-HQ-instruct_en \
     --dataset_dir dataset/ift/bali_ift_6k/ \
     --project_name BaliQwen-3B-HQ-instruct_en_ban \
@@ -25,7 +25,7 @@ CUDA_VISIBLE_DEVICES=0 python sft_unsloth.py \
     --device_id 0 \
     --output_dir models/Bali/instruct/BaliQwen-3B-HQ-instruct_en_ban
 
-CUDA_VISIBLE_DEVICES=0 python merge.py \
+CUDA_VISIBLE_DEVICES=0 python -m scaleres.training.merge_lora \
     --model_file models/Bali/instruct/BaliQwen-3B-HQ-instruct_en \
     --lora_file models/Bali/instruct/BaliQwen-3B-HQ-instruct_en_ban \
     --output_dir models/Bali/instruct/BaliQwen-3B-HQ-instruct_en_ban-merged \

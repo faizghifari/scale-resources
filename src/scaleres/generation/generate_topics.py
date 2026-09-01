@@ -8,7 +8,7 @@ uses asyncio with configurable concurrency controls.
 
 Usage example:
 
-    python generate_topics.py \
+    python -m scaleres.generation.generate_topics \
         --input seed_topics_first_1000.txt \
         --output generated_topics.json \
         --topic-concurrency 4 \
@@ -16,7 +16,7 @@ Usage example:
 
 To use a local vLLM deployment instead of OpenRouter:
 
-    python generate_topics.py \
+    python -m scaleres.generation.generate_topics \
         --model-source vllm \
         --api-base http://localhost:8000/v1 \
         --api-key token-abc123 \
@@ -36,14 +36,14 @@ import argparse
 import asyncio
 import json
 import os
-import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence, cast
 
-from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 from tqdm import tqdm
+
+from scaleres.common.llm_client import build_async_client, retrying_chat_completion
 
 DEFAULT_SUBTOPICS_PER_TOPIC = 30
 DEFAULT_QUESTIONS_PER_SUBTOPIC = 30
@@ -159,33 +159,19 @@ async def chat_completion(
 ) -> ChatCompletion:
     """Execute a chat completion call with retry, delay, and concurrency limits."""
 
-    backoff_base = 2.0
-    last_error: Exception | None = None
-
-    for attempt in range(1, cfg.max_retries + 1):
-        try:
-            async with request_semaphore:
-                response = await client.chat.completions.create(
-                    model=cfg.model,
-                    messages=list(messages),
-                    temperature=cfg.temperature,
-                    top_p=cfg.top_p,
-                    max_tokens=max_tokens,
-                    reasoning_effort="low",
-                    extra_body=cfg.extra_body or None,
-                )
-            if cfg.request_delay:
-                await asyncio.sleep(cfg.request_delay)
-            return response
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-            if attempt >= cfg.max_retries:
-                raise
-            sleep_for = backoff_base ** (attempt - 1)
-            jitter = random.uniform(0, 0.5)
-            await asyncio.sleep(sleep_for + jitter)
-
-    raise RuntimeError("Unreachable state in chat_completion") from last_error
+    return await retrying_chat_completion(
+        client,
+        messages,
+        request_semaphore,
+        max_retries=cfg.max_retries,
+        request_delay=cfg.request_delay,
+        model=cfg.model,
+        temperature=cfg.temperature,
+        top_p=cfg.top_p,
+        max_tokens=max_tokens,
+        reasoning_effort="low",
+        extra_body=cfg.extra_body or None,
+    )
 
 
 async def generate_subtopics(
@@ -455,7 +441,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_client(args: argparse.Namespace) -> AsyncOpenAI:
-    load_dotenv()
     source = args.model_source
 
     if source == "openrouter":
@@ -469,7 +454,7 @@ def build_client(args: argparse.Namespace) -> AsyncOpenAI:
         base_url = args.api_base or DEFAULT_VLLM_BASE_URL
         api_key = args.api_key or os.getenv("VLLM_API_KEY") or "token-abc123"
 
-    return AsyncOpenAI(api_key=api_key, base_url=base_url)
+    return build_async_client(api_base=base_url, api_key=api_key)
 
 
 async def process_topic(

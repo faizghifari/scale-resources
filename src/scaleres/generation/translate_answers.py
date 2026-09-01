@@ -19,16 +19,30 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import tiktoken
-from functools import lru_cache
-
-from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 from tqdm import tqdm
+
+from scaleres.common.dict_lookup import build_lexicon_block, load_dictionary
+from scaleres.common.jsonl_io import (
+    ensure_directory,
+    load_aggregate_ids,
+    load_existing_output_ids,
+    load_existing_topic_ids,
+    read_custom_ids_from_jsonl,
+)
+from scaleres.common.jsonl_io import append_jsonl as _append_jsonl
+from scaleres.common.jsonl_io import topic_output_path as _topic_output_path
+from scaleres.common.llm_client import (
+    build_async_client,
+    parse_extra_body_json,
+    retrying_chat_completion,
+)
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a precise translation assistant. Follow every user instruction carefully. "
@@ -53,7 +67,7 @@ DEFAULT_REQUEST_DELAY = 0.0
 
 JSONL_SUFFIX = ".jsonl"
 CODE_FENCE_PATTERN = re.compile(r"^```[a-zA-Z]*\n|```$", re.MULTILINE)
-TOKEN_STRIP = "\u200b\ufeff"  # remove stray zero-width chars from inputs
+TOKEN_STRIP = "​﻿"  # remove stray zero-width chars from inputs
 TOPIC_FILE_PATTERN = re.compile(r"topic(\d{4})" + re.escape(JSONL_SUFFIX) + "$")
 SURROGATE_PATTERN = re.compile(r"[\ud800-\udfff]")
 
@@ -92,29 +106,6 @@ class InstructionBlocks:
     instruction: str
 
 
-def ensure_directory(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-
-
-def read_custom_ids_from_jsonl(path: Path) -> Set[str]:
-    ids: Set[str] = set()
-    if not path.exists():
-        return ids
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            custom_id = record.get("custom_id")
-            if isinstance(custom_id, str):
-                ids.add(custom_id)
-    return ids
-
-
 def extract_topic_index(path: Path) -> Optional[int]:
     match = TOPIC_FILE_PATTERN.fullmatch(path.name)
     if not match:
@@ -143,7 +134,7 @@ def iter_topic_paths(
 def read_topic_items(path: Path, topic_index: int) -> List[AnswerItem]:
     items: List[AnswerItem] = []
     with path.open("r", encoding="utf-8") as handle:
-        for line_no, line in enumerate(handle, start=1):
+        for line in handle:
             line = line.strip()
             if not line:
                 continue
@@ -252,51 +243,13 @@ def extract_xml_block(content: str, tag: str) -> Optional[str]:
     return None
 
 
-def load_dictionary(path: Path) -> Dict[str, List[str]]:
-    with path.open("r", encoding="utf-8") as handle:
-        data = json.load(handle)
-    # ensure keys are lower-case for matching
-    return {str(k).lower(): [str(vv) for vv in value] for k, value in data.items()}
-
-
 def strip_zero_width(text: str) -> str:
     return text.translate({ord(ch): None for ch in TOKEN_STRIP})
 
 
-def tokenize_text(text: str) -> List[str]:
-    raw_tokens = text.lower().split()
-    tokens: List[str] = []
-    for token in raw_tokens:
-        cleaned = token.strip("\"'()[]{}.,;:!?<>«»“”‘’—-")
-        if cleaned:
-            tokens.append(cleaned)
-    return tokens
-
-
-def iter_ngrams(tokens: Sequence[str], n: int) -> Iterable[str]:
-    for idx in range(len(tokens) - n + 1):
-        yield " ".join(tokens[idx : idx + n])
-
-
-def build_lexicon_block(text: str, dictionary: Dict[str, List[str]]) -> str:
-    tokens = tokenize_text(text)
-    seen: Set[str] = set()
-    lines: List[str] = []
-    for n in (3, 2, 1):
-        for ngram in iter_ngrams(tokens, n):
-            if ngram in seen:
-                continue
-            translations = dictionary.get(ngram)
-            if translations:
-                seen.add(ngram)
-                joined = ", ".join(translations)
-                lines.append(f"- {ngram}: {joined}")
-    return "\n".join(lines) if lines else "None"
-
-
 def sanitize_surrogates(value: Any) -> Any:
     if isinstance(value, str):
-        return SURROGATE_PATTERN.sub("\ufffd", value)
+        return SURROGATE_PATTERN.sub("�", value)
     if isinstance(value, list):
         return [sanitize_surrogates(item) for item in value]
     if isinstance(value, tuple):
@@ -339,25 +292,12 @@ def render_prompt(
     return "\n".join(parts)
 
 
-def parse_extra_body(raw: Optional[str]) -> Dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:  # noqa: BLE001
-        raise SystemExit(f"Invalid JSON for --extra-body: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise SystemExit("--extra-body must be a JSON object")
-    return payload
-
-
 def build_client(args: argparse.Namespace) -> AsyncOpenAI:
-    load_dotenv()
     api_base = args.api_base or DEFAULT_VLLM_BASE_URL
     api_key = args.api_key or os.getenv("VLLM_API_KEY") or DEFAULT_VLLM_API_KEY
-    return AsyncOpenAI(
+    return build_async_client(
+        api_base=api_base,
         api_key=api_key,
-        base_url=api_base,
         timeout=args.timeout,
         default_headers={"OpenAI-Model": args.model},
     )
@@ -370,41 +310,25 @@ async def create_chat_completion(
     request_semaphore: asyncio.Semaphore,
     max_tokens: int,
 ) -> ChatCompletion:
-    backoff_base = 2.0
-    last_error: Exception | None = None
-
     messages = [
         {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ]
-
-    for attempt in range(1, cfg.max_retries + 1):
-        try:
-            async with request_semaphore:
-                response = await client.chat.completions.create(
-                    model=cfg.model,
-                    messages=messages,  # type: ignore
-                    temperature=cfg.temperature,
-                    top_p=cfg.top_p,
-                    max_tokens=max_tokens,
-                    reasoning_effort="low",
-                    frequency_penalty=1.0,
-                    response_format={"type": "json_object"},
-                    extra_body=cfg.extra_body or None,
-                )
-            if cfg.request_delay:
-                await asyncio.sleep(cfg.request_delay)
-            return response
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-            if attempt >= cfg.max_retries:
-                raise
-            sleep_for = backoff_base ** (attempt - 1)
-            await asyncio.sleep(sleep_for + random.uniform(0, 0.5))
-
-    raise RuntimeError(
-        "Reached unreachable state in create_chat_completion"
-    ) from last_error
+    return await retrying_chat_completion(
+        client,
+        messages,  # type: ignore
+        request_semaphore,
+        max_retries=cfg.max_retries,
+        request_delay=cfg.request_delay,
+        model=cfg.model,
+        temperature=cfg.temperature,
+        top_p=cfg.top_p,
+        max_tokens=max_tokens,
+        reasoning_effort="low",
+        frequency_penalty=1.0,
+        response_format={"type": "json_object"},
+        extra_body=cfg.extra_body or None,
+    )
 
 
 def clean_response_content(content: str) -> str:
@@ -494,19 +418,13 @@ def build_translation_record(
 
 
 def append_jsonl(path: Path, payload: Dict[str, Any]) -> None:
-    sanitized = sanitize_surrogates(payload)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(sanitized, ensure_ascii=False) + "\n")
+    """Sanitize lone UTF-16 surrogates (occasionally emitted by the model)
+    before delegating to the shared JSONL append helper."""
+    _append_jsonl(path, sanitize_surrogates(payload))
 
 
 def topic_output_path(output_dir: Path, topic_index: int) -> Path:
-    return output_dir / f"topic{topic_index:04d}{JSONL_SUFFIX}"
-
-
-def load_existing_topic_ids(path: Path) -> Set[str]:
-    if not path.exists():
-        return set()
-    return read_custom_ids_from_jsonl(path)
+    return _topic_output_path(output_dir, topic_index)
 
 
 def gather_skip_ids(output_dir: Path, aggregate_path: Optional[Path]) -> Set[str]:
@@ -514,21 +432,6 @@ def gather_skip_ids(output_dir: Path, aggregate_path: Optional[Path]) -> Set[str
     skip_ids.update(load_existing_output_ids(output_dir))
     skip_ids.update(load_aggregate_ids(aggregate_path))
     return skip_ids
-
-
-def load_existing_output_ids(output_dir: Path) -> Set[str]:
-    if not output_dir.exists():
-        return set()
-    ids: Set[str] = set()
-    for path in sorted(output_dir.glob(f"*{JSONL_SUFFIX}")):
-        ids.update(read_custom_ids_from_jsonl(path))
-    return ids
-
-
-def load_aggregate_ids(aggregate_path: Optional[Path]) -> Set[str]:
-    if not aggregate_path:
-        return set()
-    return read_custom_ids_from_jsonl(aggregate_path)
 
 
 def load_answer_bundles(
@@ -1074,7 +977,7 @@ def parse_args() -> argparse.Namespace:
     sample_parser.set_defaults(func=lambda args: asyncio.run(run_sample(args)))
 
     args = parser.parse_args()
-    args.extra_body_payload = parse_extra_body(args.extra_body)
+    args.extra_body_payload = parse_extra_body_json(args.extra_body)
     if args.topic_offset < 0:
         parser.error("--topic-offset must be zero or greater")
     if args.topic_limit is not None and args.topic_limit <= 0:
