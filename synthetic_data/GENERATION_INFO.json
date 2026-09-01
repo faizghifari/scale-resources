@@ -1,6 +1,7 @@
 {
   "_purpose": "Documents how the Indonesian/Balinese/Cirebonese synthetic QA-translation corpus is generated, so the raw intermediate batch/generation artifacts (OpenAI Batch API files, per-topic JSONL shards) don't have to be kept indefinitely just to answer 'what model/prompt made this'. See REMOVED_ARTIFACTS.json for what was deleted after this file was written.",
   "_layout_note": "As of 2026-09-01 this manifest and everything it describes (seeds, raw per-topic shards) live under synthetic_data/ at the repo root -- see the paths below. synthetic_data/raw/ and synthetic_data/seeds/generated_topics.json are gitignored (bulk data); this file and synthetic_data/seeds/seed_topics_first_1000.txt are tracked.",
+  "_prompts_note": "As of 2026-09-01 all system prompts and the translation instruction (reproduced in the 'system_prompt'/'prompt_template' fields below for quick reference) are centralized in src/scaleres/generation/prompts.py -- that module is the source of truth, this file is documentation of it.",
   "canonical_output": {
     "path": "dataset/synthetic_gen_parallel_subsets",
     "splits": {
@@ -36,7 +37,7 @@
       "provider": "self-hosted vLLM",
       "model": "gpt-oss-120b",
       "system_prompt": "You are a precise translation assistant. Follow every user instruction carefully. Never describe internal reasoning or thought processes. Always reply only with a single valid JSON object containing exactly two string keys: \"balinese\" and \"cirebonese\". Never add commentary, code fences, or extra text.",
-      "prompt_template": "synthetic_data/instruction.txt (translation instructions + <text> wrapper; lexicon hints appended per-request)",
+      "prompt_template": "src/scaleres/generation/prompts.py:TRANSLATION_INSTRUCTION (translation instructions + <text> wrapper; lexicon hints appended per-request). synthetic_data/instruction.txt was a debug sample with the same instruction plus inert filled-in text/lexicon blocks (the script only ever parsed the <instruction> block) -- deleted 2026-09-01 once the instruction was centralized.",
       "lexicons": ["dict/idn_bali.json", "dict/idn_cbn.json"],
       "input": "synthetic_data/raw/answers/*.jsonl",
       "output": "synthetic_data/raw/translations/topic<NNNN>.jsonl",
