@@ -9,8 +9,8 @@ set -euo pipefail
 # - Uses Balinese train/val datasets under dataset/cpt
 
 CUDA_VISIBLE_DEVICES=0 python -m scaleres.training.train \
-    --train_dirs dataset/cpt/bali_hq_200k\
-    --val_dirs dataset/cpt/bali_valid_hq_5000 \
+    --train_dirs dataset/cpt/ban_hq_200k\
+    --val_dirs dataset/cpt/ban_valid_hq_5000 \
     --output_dir models/Balinese-SmallLM \
     --tokenizer_path_or_id models/tokenizers_v6/ban_32k \
     --report_to wandb \

@@ -11,7 +11,7 @@ training a new language model.
 
 Example usage:
     python -m scaleres.training.train_tokenizer \\
-        --train_dirs dataset/cpt/bali_hq_200k,dataset/cpt/cbn_hq_2k \\
+        --train_dirs dataset/cpt/ban_hq_200k,dataset/cpt/cbn_hq_2k \\
         --output_dir models/BaliCirebonese-Tokenizer \\
         --vocab_size 32000 \\
         --push_to_hub --hf_repo_id="username/my-tokenizer"

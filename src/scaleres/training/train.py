@@ -11,13 +11,13 @@ Key features:
 
 First, train a tokenizer using the dedicated script:
     python -m scaleres.training.train_tokenizer \\
-        --train_dirs dataset/cpt/bali_hq_200k,dataset/cpt/cbn_hq_2k \\
+        --train_dirs dataset/cpt/ban_hq_200k,dataset/cpt/cbn_hq_2k \\
         --output_dir models/BaliCirebonese-Tokenizer --vocab_size 32000
 
 Example usage (adjust paths as needed):
     python -m scaleres.training.train \
-        --train_dirs dataset/cpt/bali_hq_200k,dataset/cpt/bali_filtered_bt-85,dataset/cpt/cbn_hq_2k \
-        --val_dirs dataset/cpt/bali_valid_hq_5000,dataset/cpt/cbn_valid_hq_500 \
+        --train_dirs dataset/cpt/ban_hq_200k,dataset/cpt/ban_filtered_bt-85,dataset/cpt/cbn_hq_2k \
+        --val_dirs dataset/cpt/ban_valid_hq_5000,dataset/cpt/cbn_valid_hq_500 \
         --output_dir models/BaliCirebonese-SmallLM --tokenizer_path_or_id models/BaliCirebonese-Tokenizer \
         --arch llama --dim 512 --n_layers 12 --n_heads 8 --seq_len 512 \
         --num_train_epochs 1 --per_device_train_batch_size 1 --gradient_accumulation_steps 32 --fp16
@@ -73,13 +73,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--train_dirs",
         type=str,
-        default="dataset/cpt/bali_hq_200k,dataset/cpt/cbn_hq_2k",
+        default="dataset/cpt/ban_hq_200k,dataset/cpt/cbn_hq_2k",
         help="Comma-separated list of dataset save_to_disk directories for training.",
     )
     parser.add_argument(
         "--val_dirs",
         type=str,
-        default="dataset/cpt/bali_valid_hq_5000,dataset/cpt/cbn_valid_hq_500",
+        default="dataset/cpt/ban_valid_hq_5000,dataset/cpt/cbn_valid_hq_500",
         help="Comma-separated list of dataset save_to_disk directories for validation.",
     )
     parser.add_argument(
