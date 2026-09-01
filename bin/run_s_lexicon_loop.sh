@@ -3,7 +3,7 @@ set -euo pipefail
 
 # === Configuration ==========================================================
 HF_PATHS=(
-  "dataset/paralel_3_lang/topics_parallel_hf"
+  "dataset/synthetic_gen_parallel_subsets"
   "dataset/paralel_3_lang/combined_paralel_dataset_705k_dedup_clean_filtered-id"
 )
 
