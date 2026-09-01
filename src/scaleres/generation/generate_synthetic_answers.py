@@ -58,14 +58,9 @@ from scaleres.common.llm_client import (
     parse_extra_body_json,
     retrying_chat_completion,
 )
+from scaleres.generation.prompts import ANSWER_GENERATION_SYSTEM_PROMPT
 
-DEFAULT_SYSTEM_PROMPT = (
-    "You are an assistant who always responds in fluent, natural Indonesian. "
-    "Deliver only the final answer; never describe internal reasoning or thought processes. "
-    "Reduce the use of bullet points, numbered lists, headings, or any list-like formatting; only use it when really necessary. "
-    "Vary sentence length and tone to keep the prose engaging, weaving in relevant examples, comparisons, or brief illustrative anecdotes when helpful. "
-    "Do not repeat or rephrase the question; begin directly with the answer in Indonesian language."
-)
+DEFAULT_SYSTEM_PROMPT = ANSWER_GENERATION_SYSTEM_PROMPT
 
 DEFAULT_VLLM_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_VLLM_API_KEY = "token-abc123"

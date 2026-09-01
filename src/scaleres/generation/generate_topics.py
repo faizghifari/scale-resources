@@ -44,6 +44,10 @@ from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 from tqdm import tqdm
 
 from scaleres.common.llm_client import build_async_client, retrying_chat_completion
+from scaleres.generation.prompts import (
+    TOPIC_QUESTION_SYSTEM_PROMPT,
+    TOPIC_SUBTOPIC_SYSTEM_PROMPT,
+)
 
 DEFAULT_SUBTOPICS_PER_TOPIC = 30
 DEFAULT_QUESTIONS_PER_SUBTOPIC = 30
@@ -182,11 +186,7 @@ async def generate_subtopics(
 ) -> List[str]:
     """Generate a list of unique subtopics for the given seed topic."""
 
-    system_prompt = (
-        "You are an expert curriculum designer expanding high-level topics into "
-        "concise, distinct subtopics. Always answer with strict JSON "
-        "and the subtopics must be in Indonesian language."
-    )
+    system_prompt = TOPIC_SUBTOPIC_SYSTEM_PROMPT
     user_prompt = (
         f"Seed topic: {topic}\n"
         f"Produce exactly {cfg.subtopics_per_topic} unique subtopics that explore "
@@ -238,11 +238,7 @@ async def generate_questions(
 ) -> List[str]:
     """Generate a list of questions for a given subtopic."""
 
-    system_prompt = (
-        "You are an investigative interviewer crafting thought-provoking "
-        "questions in Indonesian and English contexts. Respond strictly with JSON "
-        "and the questions must be in Indonesian language."
-    )
+    system_prompt = TOPIC_QUESTION_SYSTEM_PROMPT
     user_prompt = (
         f"Seed topic: {topic}\nSubtopic: {subtopic}\n"
         f"Produce exactly {cfg.questions_per_subtopic} unique questions that probe "

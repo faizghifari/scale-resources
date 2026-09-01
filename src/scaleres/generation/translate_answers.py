@@ -3,7 +3,9 @@
 
 The script mirrors the asynchronous batching pattern used in ``generate_synthetic_answers.py``
 but consumes the JSONL answer files in ``topic_answers/`` (or a user supplied directory).
-For every answer it builds a prompt using ``instruction.txt`` plus automatic lexicon
+For every answer it builds a prompt using the centralized TRANSLATION_INSTRUCTION
+template (``scaleres.generation.prompts``, overridable via ``--instruction-path``)
+plus automatic lexicon
 lookups from ``dict/idn_bali.json`` and ``dict/idn_cbn.json``, then calls an OpenAI-compatible
 vLLM endpoint concurrently. Each response must be a JSON object with ``balinese`` and
 ``cirebonese`` strings; outputs are written per-topic as JSONL files so runs are resumable.
@@ -43,13 +45,12 @@ from scaleres.common.llm_client import (
     parse_extra_body_json,
     retrying_chat_completion,
 )
-
-DEFAULT_SYSTEM_PROMPT = (
-    "You are a precise translation assistant. Follow every user instruction carefully. "
-    "Never describe internal reasoning or thought processes. "
-    "Always reply only with a single valid JSON object containing exactly two string keys: "
-    '"balinese" and "cirebonese". Never add commentary, code fences, or extra text.'
+from scaleres.generation.prompts import (
+    TRANSLATION_INSTRUCTION,
+    TRANSLATION_SYSTEM_PROMPT,
 )
+
+DEFAULT_SYSTEM_PROMPT = TRANSLATION_SYSTEM_PROMPT
 
 DEFAULT_VLLM_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_VLLM_API_KEY = "token-abc123"
@@ -225,12 +226,14 @@ def count_prompt_tokens(
     return total_tokens
 
 
-def load_instruction_blocks(path: Path) -> InstructionBlocks:
+def load_instruction_blocks(path: Optional[Path]) -> InstructionBlocks:
+    if path is None:
+        return InstructionBlocks(instruction=TRANSLATION_INSTRUCTION.strip())
     content = path.read_text(encoding="utf-8")
     instruction_text = extract_xml_block(content, "instruction")
     if instruction_text is None:
         raise SystemExit(
-            "instruction.txt must contain <instruction>...</instruction> block"
+            f"{path} must contain an <instruction>...</instruction> block"
         )
     return InstructionBlocks(instruction=instruction_text.strip())
 
@@ -822,8 +825,12 @@ def parse_args() -> argparse.Namespace:
     parent.add_argument(
         "--instruction-path",
         type=Path,
-        default=Path("synthetic_data/instruction.txt"),
-        help="File containing the translation instruction template.",
+        default=None,
+        help=(
+            "Optional file containing an <instruction>...</instruction> block to "
+            "override the centralized TRANSLATION_INSTRUCTION in "
+            "scaleres.generation.prompts."
+        ),
     )
     parent.add_argument(
         "--balinese-dict",
