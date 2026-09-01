@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scaleres"
+version = "0.1.0"
+description = "Balinese/Cirebonese low-resource-language scaling pipeline"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "transformers",
+    "datasets",
+    "accelerate",
+    "peft",
+    "tokenizers",
+    "openai",
+    "python-dotenv",
+    "tqdm",
+    "tiktoken",
+    "numpy",
+    "fasttext-wheel",
+    "matplotlib",
+    "huggingface-hub",
+    "wandb",
+    "text-dedup",
+]
+
+[project.optional-dependencies]
+# Unsloth LoRA CPT/SFT (scaleres.training.cpt_unsloth / sft_unsloth) needs a
+# GPU-matched build; install separately per https://github.com/unslothai/unsloth
+# rather than pinning a version here.
+unsloth = ["unsloth"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

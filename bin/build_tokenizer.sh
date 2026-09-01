@@ -56,7 +56,7 @@ if [[ -n "${HF_TOKEN_ARG:-}" ]]; then
     CMD_ARGS+=(${HF_TOKEN_ARG})
 fi
 
-python train_tokenizer.py "${CMD_ARGS[@]}"
+python -m scaleres.training.train_tokenizer "${CMD_ARGS[@]}"
 
 echo ""
 echo "Tokenizer training complete."

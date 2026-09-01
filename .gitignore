@@ -187,5 +187,8 @@ unsloth*/
 wandb/
 eval*/
 batches/
+autoresearch/
+metrics/
 
-generated_topics.json
+synthetic_data/seeds/
+synthetic_data/REMOVED_ARTIFACTS.json

@@ -4,28 +4,25 @@
 This refactor removes the legacy OpenAI Batch workflow and replaces it with a
 fully asynchronous pipeline that talks directly to a vLLM server. The script
 uses two layers of concurrency (topic-level and request-level) mirroring the
-``generate_topics.py`` design, skips questions that were already answered in
-previous batch runs, and emits JSONL outputs per topic that remain compatible
-with ``create_synthetic_dataset.py``.
+``generate_topics.py`` design and skips questions that were already answered
+in previous runs.
 
 Typical usages::
 
     # Generate answers for all remaining questions and store per-topic JSONL
-    python generate_synthetic_answers.py generate \
-        --input generated_topics.json \
-        --output-dir topic_answers \
+    python -m scaleres.generation.generate_synthetic_answers generate \
+        --input synthetic_data/seeds/generated_topics.json \
+        --output-dir synthetic_data/raw/answers \
         --request-concurrency 64 \
         --topic-concurrency 4 \
         --api-base http://localhost:8000/v1 \
         --model gpt-oss-120b
 
     # Run a quick concurrent sample without writing outputs
-    python generate_synthetic_answers.py sample --count 3
+    python -m scaleres.generation.generate_synthetic_answers sample --count 3
 
-The script automatically loads existing batch request JSONL files listed in
-``batches/.submitted_batches`` (and any legacy results) to avoid re-processing
-questions that were already handled. Existing per-topic output files produced by
-this script are also respected, enabling resumable executions.
+Existing per-topic output files produced by this script are respected,
+enabling resumable executions.
 """
 
 from __future__ import annotations
@@ -34,24 +31,31 @@ import argparse
 import asyncio
 import json
 import os
-import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 from tqdm import tqdm
 
-DEFAULT_SYSTEM_PROMPT = (
-    "You are an assistant who always responds in fluent, natural Indonesian. "
-    "Deliver only the final answer; never describe internal reasoning or thought processes. "
-    "Reduce the use of bullet points, numbered lists, headings, or any list-like formatting; only use it when really necessary. "
-    "Vary sentence length and tone to keep the prose engaging, weaving in relevant examples, comparisons, or brief illustrative anecdotes when helpful. "
-    "Do not repeat or rephrase the question; begin directly with the answer in Indonesian language."
+from scaleres.common.jsonl_io import (
+    append_jsonl,
+    ensure_directory,
+    load_aggregate_ids,
+    load_existing_output_ids,
+    load_existing_topic_ids,
+    topic_output_path as _topic_output_path,
 )
+from scaleres.common.llm_client import (
+    build_async_client,
+    parse_extra_body_json,
+    retrying_chat_completion,
+)
+from scaleres.generation.prompts import ANSWER_GENERATION_SYSTEM_PROMPT
+
+DEFAULT_SYSTEM_PROMPT = ANSWER_GENERATION_SYSTEM_PROMPT
 
 DEFAULT_VLLM_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_VLLM_API_KEY = "token-abc123"
@@ -64,8 +68,6 @@ DEFAULT_TOPIC_CONCURRENCY = 1
 DEFAULT_REQUEST_CONCURRENCY = 512
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_REQUEST_DELAY = 0.0
-
-JSONL_SUFFIX = ".jsonl"
 
 
 @dataclass(slots=True)
@@ -95,10 +97,6 @@ class TopicBundle:
     index: int
     title: str
     questions: List[QuestionItem]
-
-
-def ensure_directory(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
 
 
 def load_topics(input_path: Path) -> List[TopicBundle]:
@@ -131,95 +129,10 @@ def load_topics(input_path: Path) -> List[TopicBundle]:
     return bundles
 
 
-def read_custom_ids_from_jsonl(path: Path) -> Set[str]:
-    ids: Set[str] = set()
-    if not path.exists():
-        return ids
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            custom_id = record.get("custom_id")
-            if isinstance(custom_id, str):
-                ids.add(custom_id)
-    return ids
-
-
-def load_submitted_custom_ids(batches_dir: Path, submitted_path: Path) -> Set[str]:
-    if not submitted_path.exists() or not batches_dir.exists():
-        return set()
-
-    submitted_ids: Set[str] = set()
-    entries = [
-        line.strip()
-        for line in submitted_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    for entry in entries:
-        candidate_paths: List[Path]
-        if entry.endswith(JSONL_SUFFIX):
-            candidate = batches_dir / entry
-            candidate_paths = [candidate]
-        else:
-            candidate_paths = sorted(batches_dir.glob(f"{entry}*{JSONL_SUFFIX}"))
-        for candidate in candidate_paths:
-            if candidate.exists():
-                submitted_ids.update(read_custom_ids_from_jsonl(candidate))
-                break
-    return submitted_ids
-
-
-def load_legacy_result_ids(results_dir: Path) -> Set[str]:
-    if not results_dir.exists():
-        return set()
-    ids: Set[str] = set()
-    for path in sorted(results_dir.glob(f"*{JSONL_SUFFIX}")):
-        ids.update(read_custom_ids_from_jsonl(path))
-    return ids
-
-
-def load_existing_output_ids(output_dir: Path) -> Set[str]:
-    if not output_dir.exists():
-        return set()
-    ids: Set[str] = set()
-    for path in sorted(output_dir.glob(f"*{JSONL_SUFFIX}")):
-        ids.update(read_custom_ids_from_jsonl(path))
-    return ids
-
-
-def load_aggregate_ids(aggregate_path: Optional[Path]) -> Set[str]:
-    if not aggregate_path:
-        return set()
-    return read_custom_ids_from_jsonl(aggregate_path)
-
-
-def append_jsonl(path: Path, payload: Dict[str, Any]) -> None:
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-
-def parse_extra_body(raw: Optional[str]) -> Dict[str, Any]:
-    if not raw:
-        return {"include_reasoning": False}
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:  # noqa: BLE001
-        raise SystemExit(f"Invalid JSON for --extra-body: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise SystemExit("--extra-body must be a JSON object")
-    return payload
-
-
 def build_client(args: argparse.Namespace) -> AsyncOpenAI:
-    load_dotenv()
     api_base = args.api_base or DEFAULT_VLLM_BASE_URL
     api_key = args.api_key or os.getenv("VLLM_API_KEY") or DEFAULT_VLLM_API_KEY
-    return AsyncOpenAI(api_key=api_key, base_url=api_base, timeout=args.timeout)
+    return build_async_client(api_base=api_base, api_key=api_key, timeout=args.timeout)
 
 
 async def create_chat_completion(
@@ -228,36 +141,23 @@ async def create_chat_completion(
     cfg: GenerationConfig,
     request_semaphore: asyncio.Semaphore,
 ) -> ChatCompletion:
-    backoff_base = 2.0
-    last_error: Exception | None = None
-
     messages = [
         {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
         {"role": "user", "content": item.question},
     ]
-
-    for attempt in range(1, cfg.max_retries + 1):
-        try:
-            async with request_semaphore:
-                response = await client.chat.completions.create(
-                    model=cfg.model,
-                    messages=messages,  # type: ignore
-                    temperature=cfg.temperature,
-                    top_p=cfg.top_p,
-                    max_tokens=cfg.max_tokens,
-                    extra_body=cfg.extra_body or None,
-                )
-            if cfg.request_delay:
-                await asyncio.sleep(cfg.request_delay)
-            return response
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-            if attempt >= cfg.max_retries:
-                raise
-            sleep_for = backoff_base ** (attempt - 1)
-            await asyncio.sleep(sleep_for + random.uniform(0, 0.5))
-
-    raise RuntimeError("Unreachable state in create_chat_completion") from last_error
+    return await retrying_chat_completion(
+        client,
+        messages,  # type: ignore
+        request_semaphore,
+        max_retries=cfg.max_retries,
+        request_delay=cfg.request_delay,
+        model=cfg.model,
+        temperature=cfg.temperature,
+        top_p=cfg.top_p,
+        max_tokens=cfg.max_tokens,
+        reasoning_effort="low",
+        extra_body=cfg.extra_body or None,
+    )
 
 
 def build_response_record(
@@ -295,13 +195,7 @@ async def fetch_answer_record(
 
 
 def topic_output_path(output_dir: Path, bundle: TopicBundle) -> Path:
-    return output_dir / f"topic{bundle.index:04d}{JSONL_SUFFIX}"
-
-
-def load_existing_topic_ids(path: Path) -> Set[str]:
-    if not path.exists():
-        return set()
-    return read_custom_ids_from_jsonl(path)
+    return _topic_output_path(output_dir, bundle.index)
 
 
 async def process_topic(
@@ -363,10 +257,6 @@ async def process_topic(
 
 def gather_skip_ids(args: argparse.Namespace, output_dir: Path) -> Set[str]:
     skip_ids: Set[str] = set()
-    skip_ids.update(
-        load_submitted_custom_ids(args.legacy_batches_dir, args.submitted_batches)
-    )
-    skip_ids.update(load_legacy_result_ids(args.legacy_results_dir))
     skip_ids.update(load_existing_output_ids(output_dir))
     skip_ids.update(load_aggregate_ids(args.aggregate_answers))
     return skip_ids
@@ -506,13 +396,13 @@ def parse_args() -> argparse.Namespace:
     parent.add_argument(
         "--input",
         type=Path,
-        default=Path("generated_topics.json"),
+        default=Path("synthetic_data/seeds/generated_topics.json"),
         help="Path to the JSON file containing topics, subtopics, and questions.",
     )
     parent.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("topic_answers"),
+        default=Path("synthetic_data/raw/answers"),
         help="Directory to store per-topic answer JSONL files.",
     )
     parent.add_argument(
@@ -578,24 +468,6 @@ def parse_args() -> argparse.Namespace:
         help="Maximum number of in-flight chat completion requests.",
     )
     parent.add_argument(
-        "--submitted-batches",
-        type=Path,
-        default=Path("batches/.submitted_batches"),
-        help="File listing batch identifiers that have already been processed.",
-    )
-    parent.add_argument(
-        "--legacy-batches-dir",
-        type=Path,
-        default=Path("batches"),
-        help="Directory containing legacy batch request JSONL files.",
-    )
-    parent.add_argument(
-        "--legacy-results-dir",
-        type=Path,
-        default=Path("batches/results"),
-        help="Directory containing legacy batch output JSONL files.",
-    )
-    parent.add_argument(
         "--aggregate-answers",
         type=Path,
         help="Optional aggregated JSONL file whose entries should be skipped.",
@@ -634,7 +506,9 @@ def parse_args() -> argparse.Namespace:
     sample_parser.set_defaults(func=lambda args: asyncio.run(run_sample(args)))
 
     args = parser.parse_args()
-    args.extra_body_payload = parse_extra_body(args.extra_body)
+    args.extra_body_payload = parse_extra_body_json(
+        args.extra_body, default={"include_reasoning": False}
+    )
     return args
 
 

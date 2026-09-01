@@ -1,0 +1,71 @@
+{
+  "_purpose": "Documents how the Indonesian/Balinese/Cirebonese synthetic QA-translation corpus is generated, so the raw intermediate batch/generation artifacts (OpenAI Batch API files, per-topic JSONL shards) don't have to be kept indefinitely just to answer 'what model/prompt made this'. See REMOVED_ARTIFACTS.json for what was deleted after this file was written.",
+  "_layout_note": "As of 2026-09-01 this manifest and everything it describes (seeds, raw per-topic shards) live under synthetic_data/ at the repo root -- see the paths below. synthetic_data/raw/ and synthetic_data/seeds/generated_topics.json are gitignored (bulk data); this file and synthetic_data/seeds/seed_topics_first_1000.txt are tracked.",
+  "_prompts_note": "As of 2026-09-01 all system prompts and the translation instruction (reproduced in the 'system_prompt'/'prompt_template' fields below for quick reference) are centralized in src/scaleres/generation/prompts.py -- that module is the source of truth, this file is documentation of it.",
+  "canonical_output": {
+    "path": "dataset/parallel/synthetic",
+    "splits": {
+      "raw": "2,196,290 rows, id/indonesian/balinese/cirebonese",
+      "filtered_heuristic": "LID-filtered subset of raw, rebuilt by refresh_filtered_subset.py"
+    },
+    "published_to": "huggingface.co/datasets/haznitrama/idn-ban-cbn-synthetic (via scaleres.dataprep.push_hf_parallel_dataset)"
+  },
+  "pipeline": [
+    {
+      "stage": "1. topic/subtopic/question generation",
+      "script": "python -m scaleres.generation.generate_topics",
+      "provider": "OpenRouter",
+      "model": "qwen/qwen3-235b-a22b:free",
+      "params": {"subtopics_per_topic": 30, "questions_per_subtopic": 30},
+      "input": "synthetic_data/seeds/seed_topics_first_1000.txt",
+      "output": "synthetic_data/seeds/generated_topics.json (9,856 topics)"
+    },
+    {
+      "stage": "2. answer generation (Indonesian)",
+      "script": "python -m scaleres.generation.generate_synthetic_answers",
+      "provider": "self-hosted vLLM",
+      "model": "gpt-oss-120b",
+      "system_prompt": "You are an assistant who always responds in fluent, natural Indonesian. Deliver only the final answer; never describe internal reasoning or thought processes. Reduce the use of bullet points, numbered lists, headings, or any list-like formatting; only use it when really necessary. Vary sentence length and tone to keep the prose engaging, weaving in relevant examples, comparisons, or brief illustrative anecdotes when helpful. Do not repeat or rephrase the question; begin directly with the answer in Indonesian language.",
+      "input": "synthetic_data/seeds/generated_topics.json",
+      "output": "synthetic_data/raw/answers/topic<NNNN>.jsonl (one file per topic, ~900 Q&A pairs each)",
+      "status_as_of_2026-09-01": "5,718 of 9,856 topics answered (58%)",
+      "note": "Topics answered before 2025-11-11 (commit 8d6c641) were generated via the OpenAI Batch API (model gpt-5-nano) instead of vLLM. Those runs' raw batch files lived in batches/results + batches/errors and were deleted 2026-09-01 (see REMOVED_ARTIFACTS.json) once verified 100% redundant with the synthetic_data/raw/answers/ shards they produced -- the vLLM script always re-wrote the same custom_ids into that directory in the live per-topic format."
+    },
+    {
+      "stage": "3. translation (Balinese + Cirebonese)",
+      "script": "python -m scaleres.generation.translate_answers (or run via scaleres.generation.run_translate_chunks for bounded batches)",
+      "provider": "self-hosted vLLM",
+      "model": "gpt-oss-120b",
+      "system_prompt": "You are a precise translation assistant. Follow every user instruction carefully. Never describe internal reasoning or thought processes. Always reply only with a single valid JSON object containing exactly two string keys: \"balinese\" and \"cirebonese\". Never add commentary, code fences, or extra text.",
+      "prompt_template": "src/scaleres/generation/prompts.py:TRANSLATION_INSTRUCTION (translation instructions + <text> wrapper; lexicon hints appended per-request). synthetic_data/instruction.txt was a debug sample with the same instruction plus inert filled-in text/lexicon blocks (the script only ever parsed the <instruction> block) -- deleted 2026-09-01 once the instruction was centralized.",
+      "lexicons": ["dict/idn_bali.json", "dict/idn_cbn.json"],
+      "input": "synthetic_data/raw/answers/*.jsonl",
+      "output": "synthetic_data/raw/translations/topic<NNNN>.jsonl",
+      "status_as_of_2026-09-01": "2,636 of 5,718 answered topics translated (46%)"
+    },
+    {
+      "stage": "4. packing",
+      "script": "python -m scaleres.dataprep.build_parallel_hf_dataset --topics-dir synthetic_data/raw/translations --output-dir dataset/parallel/synthetic/raw",
+      "filters_applied": "optional --balinese-clean/--cirebonese-clean id allowlists from metrics/cache/{lang}/translations_clean.jsonl (produced by scaleres.dataprep.clean_translations)",
+      "dedup": "by id, drops rows with any empty indonesian/balinese/cirebonese field",
+      "built_2025-12-09": "2,196,290 rows"
+    },
+    {
+      "stage": "5. heuristic filtering",
+      "script": "python -m scaleres.dataprep.refresh_filtered_subset --dataset-dir dataset/parallel/synthetic",
+      "method": "GlotLID language-identification pass (models/glotlid/model.bin) per language, keeps rows where both balinese and cirebonese pass",
+      "output_split": "filtered_heuristic"
+    },
+    {
+      "stage": "6. publish",
+      "script": "python -m scaleres.dataprep.push_hf_parallel_dataset",
+      "target": "huggingface.co/datasets/haznitrama/idn-ban-cbn-synthetic"
+    }
+  ],
+  "known_live_downstream_consumer": {
+    "path": "dataset/parallel/synthetic_clean/clean_v1",
+    "note": "Not produced by any script in this repo's history -- built ad hoc (Aug 2026) from dataset/parallel/synthetic (formerly dataset/synthetic_gen_parallel_subsets, renamed 2026-09-01) for the autoresearch/ SAE-gap research program, which reads it from ~15 experiment scripts. Do not delete or rebuild without checking autoresearch/ first."
+  },
+  "manifest_written": "2026-09-01",
+  "manifest_written_by": "workspace refactor session (see auto-memory workspace-refactor-2026-09)"
+}
