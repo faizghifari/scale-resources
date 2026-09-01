@@ -175,7 +175,6 @@ cython_debug/
 
 # ignore txt files
 *.txt
-!invalid_entries.txt
 
 # ignore jsonl files
 *.jsonl
