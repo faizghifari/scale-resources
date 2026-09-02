@@ -189,6 +189,7 @@ eval*/
 batches/
 autoresearch/
 metrics/
+research/
 
 synthetic_data/seeds/
 synthetic_data/REMOVED_ARTIFACTS.json
