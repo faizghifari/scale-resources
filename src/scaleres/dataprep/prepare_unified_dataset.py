@@ -525,20 +525,35 @@ def load_global_mmlu(args: argparse.Namespace) -> Iterator[Dict]:
 
 def load_indommlu(args: argparse.Namespace) -> Iterator[Dict]:
     ds_dict = load_dataset("indolem/IndoMMLU", streaming=args.streaming)  # type: ignore
+    n_yielded = n_skipped = 0
     for split_name, split in ds_dict.items():
         for idx, row in enumerate(split):
             rid = row.get("id") or f"indommlu:{split_name}:{idx}"
-            question = (row.get("soal") or "").strip()
-            options_block = row.get("jawaban") or ""
-            options_lines = [
-                line for line in options_block.splitlines() if line.strip()
-            ]
+            # The real IndoMMLU schema is question/options/answer, NOT the
+            # Indonesian-named soal/jawaban/kunci this loader originally guessed.
+            # Because every read used .get(..., "") the mismatch produced 14,981
+            # structurally valid but completely EMPTY records instead of an error --
+            # see the empty-output guard at the end of this function.
+            question = (row.get("question") or "").strip()
+            # `options` is a string repr of a Python list, e.g.
+            # "['A. Galungan', 'B. Kuningan', ...]", not a newline-delimited block.
+            raw_options = row.get("options")
+            if isinstance(raw_options, str):
+                try:
+                    raw_options = ast.literal_eval(raw_options)
+                except (ValueError, SyntaxError):
+                    raw_options = [
+                        ln for ln in raw_options.splitlines() if ln.strip()
+                    ]
             options = {}
-            for line in options_lines:
-                if len(line) >= 3 and line[1] == ".":
-                    letter = line[0].strip().upper()
-                    options[letter] = line[3:].strip()
-            answer_key = str(row.get("kunci", "")).strip()
+            for line in list(raw_options or []):
+                line = str(line).strip()
+                if len(line) >= 3 and line[1] in ".)":
+                    options[line[0].strip().upper()] = line[2:].lstrip(" .)").strip()
+            answer_key = str(row.get("answer", "")).strip().upper()
+            if not (question and options and answer_key):
+                n_skipped += 1
+                continue
             user_prompt_lines = [question] + [f"{k}. {v}" for k, v in options.items()]
             mcq_out = format_mcq_output(answer_key, options)
             yield make_record(
@@ -558,8 +573,18 @@ def load_indommlu(args: argparse.Namespace) -> Iterator[Dict]:
                     "category": row.get("level"),
                 },
             )
+            n_yielded += 1
             if args.max_per_source and idx + 1 >= args.max_per_source:
                 break
+    # Fail loudly. The original schema mismatch was invisible for months because a
+    # fully-empty source still produced 14,981 well-formed rows; any future column
+    # rename should stop the build instead of silently emptying an MCQA source.
+    if n_yielded == 0 or n_skipped > n_yielded:
+        raise RuntimeError(
+            f"IndoMMLU: yielded {n_yielded}, skipped {n_skipped} -- schema mismatch. "
+            "Expected columns question/options/answer."
+        )
+    print(f"[IndoMMLU] yielded {n_yielded}, skipped {n_skipped}")
 
 
 def load_blend(args: argparse.Namespace) -> Iterator[Dict]:
