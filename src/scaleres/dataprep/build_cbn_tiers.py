@@ -92,6 +92,10 @@ def main():
     ap.add_argument("--min-ratio", type=float, default=1.0,
                     help="a tier must beat this cbn:jav marker ratio to be written")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--merge-fpr", type=float, default=None,
+                    help="after tiering, merge that tier's outputs into one "
+                         "deduplicated dataset at --merge-out")
+    ap.add_argument("--merge-out", default="dataset/cpt/cbn_tierB")
     a = ap.parse_args()
 
     from s_disc import s_disc_score, SCORER_VERSION
@@ -176,6 +180,64 @@ def main():
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "results": results}, indent=1, ensure_ascii=False), encoding="utf-8")
     print(f"\nwrote {REPORT.relative_to(ROOT)}")
+
+    if a.merge_fpr is not None and not a.dry_run:
+        merge(a, results)
+
+
+def merge(a, results):
+    """One deduplicated dataset from a tier's outputs.
+
+    The sources overlap heavily -- combined_705k contains the annotation-filter
+    corpora -- so summing their row counts overstates what you actually have.
+    Deduplication is on the normalised TARGET side, and the merge asserts zero
+    overlap with the eval floor rather than trusting that the tiering preserved
+    it.
+    """
+    import unicodedata
+    from datasets import Dataset, load_from_disk
+
+    WSN = re.compile(r"\s+")
+
+    def norm(t):
+        return WSN.sub(" ", unicodedata.normalize("NFKC", t or "")).strip().lower()
+
+    picked = [r for r in results
+              if r["fpr"] == a.merge_fpr and r["output"] and "TIER B" in r["verdict"]]
+    if not picked:
+        print(f"merge: nothing at fpr={a.merge_fpr}"); return
+
+    eval_keys = {norm(t) for t in
+                 load_from_disk(str(ROOT / "dataset/eval/cbn/ood_clean_v2"))["text"]}
+    seen, rows = set(), []
+    print(f"\nmerging tier fpr={a.merge_fpr:.0%}")
+    for r in picked:
+        d = load_from_disk(str(ROOT / r["output"]))
+        col = r["column"]
+        src = "indonesian" if "indonesian" in d.column_names else None
+        new = 0
+        for rec in d:
+            t = (rec[col] or "").strip()
+            k = norm(t)
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            rows.append({"text": t,
+                         "indonesian": (rec.get(src) or "") if src else "",
+                         "source": Path(r["path"]).name})
+            new += 1
+        print(f"  +{new:>6,} unique from {Path(r['path']).name}")
+
+    leak = sum(1 for k in seen if k in eval_keys)
+    print(f"  leak check vs eval floor: {leak} (must be 0)")
+    if leak:
+        raise SystemExit("merged tier overlaps the eval floor -- refusing to write")
+
+    ch = sum(len(r["text"]) for r in rows)
+    out = ROOT / a.merge_out
+    Dataset.from_list(rows).save_to_disk(str(out))
+    print(f"  wrote {a.merge_out}: {len(rows):,} rows, "
+          f"{ch/3.99/1000:.0f}k tokens, parallel side retained")
 
 
 if __name__ == "__main__":
