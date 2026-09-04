@@ -51,6 +51,13 @@ def main():
     ap.add_argument("--batch", type=int, default=1)
     ap.add_argument("--accum", type=int, default=16)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--eval-batch", type=int, default=2,
+                    help="HF defaults this to 8, which on a 16GB card allocates "
+                         "a block big enough to fragment the allocator for the "
+                         "rest of the run -- steps went 19s -> 7.7min at 98% "
+                         "VRAM, a thrash rather than an OOM")
+    ap.add_argument("--resume", default=None,
+                    help="checkpoint dir to resume from")
     a = ap.parse_args()
 
     import torch
@@ -124,6 +131,8 @@ def main():
         weight_decay=0.0, bf16=True, fp16=False,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
+        per_device_eval_batch_size=a.eval_batch,
+        eval_accumulation_steps=1,
         logging_steps=10, eval_strategy="epoch", save_strategy="epoch",
         save_total_limit=1, report_to=[], seed=a.seed,
         dataloader_num_workers=2, optim="adamw_torch",
@@ -136,7 +145,7 @@ def main():
     print(f"BASE eval loss {base_eval['eval_loss']:.4f} "
           f"ppl {math.exp(base_eval['eval_loss']):.1f}")
 
-    trainer.train()
+    trainer.train(resume_from_checkpoint=a.resume)
     final = trainer.evaluate()
     print(f"TUNED eval loss {final['eval_loss']:.4f} "
           f"ppl {math.exp(final['eval_loss']):.1f}")
