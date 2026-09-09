@@ -193,3 +193,5 @@ research/
 
 synthetic_data/seeds/
 synthetic_data/REMOVED_ARTIFACTS.json
+# Isolated venv for Gemma4/transformers-5.x (see .venv-gemma4 note)
+.venv-gemma4/
