@@ -156,6 +156,12 @@ def main():
     }
     print(json.dumps(summary, indent=1, ensure_ascii=False))
 
+    # Also drop the summary NEXT TO the corpus. The central REPORT is keyed by input
+    # path and is easy to lose track of; a corpus directory that cannot say its own
+    # keep rate, token count and scorer version is unciteable months later.
+    (out_path.parent / "manifest.json").write_text(
+        json.dumps(summary, indent=1, ensure_ascii=False), encoding="utf-8")
+
     prev = json.loads(REPORT.read_text()) if REPORT.exists() else []
     prev = [p for p in prev if p.get("input") != a.inp]
     prev.append(summary)

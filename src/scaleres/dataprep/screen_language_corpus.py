@@ -26,6 +26,14 @@ an absolute score lets the majority-shared language win, a contrast does not.
 
     python -m scaleres.dataprep.screen_language_corpus --langs min ace bug mak
     python -m scaleres.dataprep.screen_language_corpus --langs min --limit 20000
+
+v2 (source expansion): several raw dirs in priority order, a separate output and
+report so the v1 corpus is untouched, and decontamination against the FIXED eval
+floor -- new sources are dropped on overlap, the eval set is never shrunk.
+
+    python -m scaleres.dataprep.screen_language_corpus --langs bug \\
+        --src-dirs mono mono_v2 --out-name mono_v2.jsonl \\
+        --report autoresearch/experiments/results/S2_9_screen_v2.json --decontam-eval
 """
 from __future__ import annotations
 
@@ -73,6 +81,11 @@ LANGS = {
 MIN_SEG_CHARS = 40        # below this GlotLID is unreliable; segment is dropped
 MIN_DOC_CHARS = 100       # a document this short after screening is not worth keeping
 MIN_KEEP_FRACTION = 0.5   # drop the document if under half its text survived
+# Sentence-level sources (one sentence per row, no document context). MIN_DOC_CHARS
+# would drop most of them outright, so they fall back to the segment floor instead.
+SENTENCE_SOURCES = {"munggok__KoPI-NLLB", "openlanguagedata__oldi_seed"}
+EVAL = ROOT / "dataset/eval"
+DECONTAM_NGRAM = 10
 SHINGLE = 5
 NUM_PERM = 64
 BANDS = 16                # 16 bands x 4 rows -> ~0.7 Jaccard threshold
@@ -143,17 +156,41 @@ class Screener:
         return (p_t - p_c) >= self.margin and top in self.target, top, p_t - p_c
 
 
-def run_language(lang: str, limit: int | None) -> dict:
+def ngrams(text: str, n: int = DECONTAM_NGRAM) -> set[str]:
+    w = norm(text).split()
+    return {" ".join(w[i:i + n]) for i in range(len(w) - n + 1)}
+
+
+def eval_ngrams(lang: str) -> set[str]:
+    from datasets import load_from_disk
+    grams: set[str] = set()
+    for d in sorted((EVAL / lang).glob("*")):
+        if (d / "dataset_info.json").exists() or (d / "state.json").exists():
+            ds = load_from_disk(str(d))
+            # every string column: minimal-pairs sets carry good/bad sentence columns, not `text`
+            for col, feat in ds.features.items():
+                if getattr(feat, "dtype", None) == "string":
+                    for t in ds[col]:
+                        grams |= ngrams(t or "")
+    return grams
+
+
+def run_language(lang: str, limit: int | None, src_dirs: list[str] = ("mono",),
+                 out_name: str = "mono.jsonl", decontam: bool = False) -> dict:
     cfg = LANGS[lang]
-    src_dir = RAW / lang / "mono"
-    if not src_dir.exists():
-        return {"lang": lang, "error": f"no {src_dir}"}
+    dirs = [RAW / lang / s for s in src_dirs]
+    missing = [str(d) for d in dirs if not d.exists()]
+    if missing:
+        return {"lang": lang, "error": f"no {missing}"}
 
     sc = Screener(cfg)
     seen_exact: set[int] = set()
     bands: dict[tuple, list] = defaultdict(list)
-    out_path = OUT / lang / "mono.jsonl"
+    out_path = OUT / lang / out_name
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    ev = eval_ngrams(lang) if decontam else set()
+    if decontam and not ev:
+        return {"lang": lang, "error": f"--decontam-eval but no eval sets under {EVAL / lang}"}
 
     per_source: dict[str, Counter] = defaultdict(Counter)
     rejected_labels: Counter = Counter()
@@ -161,8 +198,11 @@ def run_language(lang: str, limit: int | None) -> dict:
     seen_docs = 0
 
     with open(out_path, "w", encoding="utf-8") as fout:
-        for f in sorted(src_dir.glob("*.jsonl")):
+        # earlier dirs first, so v1 sources keep their documents and new sources
+        # lose the dedup ties
+        for f in [f for d in dirs for f in sorted(d.glob("*.jsonl"))]:
             src = f.stem
+            min_doc = MIN_SEG_CHARS if src in SENTENCE_SOURCES else MIN_DOC_CHARS
             with open(f, encoding="utf-8") as fh:
                 for line in fh:
                     if limit and seen_docs >= limit:
@@ -174,7 +214,7 @@ def run_language(lang: str, limit: int | None) -> dict:
                     st["in"] += 1
                     st["in_chars"] += len(text)
 
-                    if len(text) < MIN_DOC_CHARS:
+                    if len(text) < min_doc:
                         st["drop_short"] += 1
                         continue
 
@@ -211,11 +251,14 @@ def run_language(lang: str, limit: int | None) -> dict:
 
                     body = "\n\n".join(keep)
                     total = len(body) + dropped_chars
-                    if not body or len(body) < MIN_DOC_CHARS:
+                    if not body or len(body) < min_doc:
                         st["drop_no_content"] += 1
                         continue
                     if total and len(body) / total < MIN_KEEP_FRACTION:
                         st["drop_mostly_foreign"] += 1
+                        continue
+                    if ev and not ngrams(body).isdisjoint(ev):
+                        st["drop_eval_overlap"] += 1
                         continue
 
                     fout.write(json.dumps(
@@ -231,6 +274,8 @@ def run_language(lang: str, limit: int | None) -> dict:
         "lang": lang,
         "config": {k: v for k, v in cfg.items() if k != "why"},
         "why": cfg["why"],
+        "src_dirs": list(src_dirs), "decontam_eval": decontam,
+        "eval_ngrams": len(ev),
         "docs_in": seen_docs, "docs_out": kept_docs,
         "chars_out": kept_chars,
         "per_source": {k: dict(v) for k, v in per_source.items()},
@@ -244,12 +289,19 @@ def main():
     ap.add_argument("--langs", nargs="+", default=["min", "ace", "bug", "mak"])
     ap.add_argument("--limit", type=int, default=None,
                     help="max input docs per language (smoke tests)")
+    ap.add_argument("--src-dirs", nargs="+", default=["mono"],
+                    help="subdirs of dataset/raw/<lang>/, in dedup priority order")
+    ap.add_argument("--out-name", default="mono.jsonl")
+    ap.add_argument("--report", type=Path, default=REPORT)
+    ap.add_argument("--decontam-eval", action="store_true",
+                    help="drop docs sharing a 10-gram with dataset/eval/<lang>/*")
     a = ap.parse_args()
+    report = a.report if a.report.is_absolute() else ROOT / a.report
 
     results = []
     for lang in a.langs:
         print(f"\n=== {lang} ===", flush=True)
-        r = run_language(lang, a.limit)
+        r = run_language(lang, a.limit, a.src_dirs, a.out_name, a.decontam_eval)
         results.append(r)
         if "error" in r:
             print(f"  {r['error']}")
@@ -265,15 +317,15 @@ def main():
         print(f"    top rejected segment labels: "
               f"{list(r['rejected_segment_labels'].items())[:6]}")
 
-    REPORT.parent.mkdir(parents=True, exist_ok=True)
-    REPORT.write_text(json.dumps({
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(json.dumps({
         "exp": "S2.2_screen",
         "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "note": ("Per-segment LID with a margin against named confusables, after "
                  "exact and MinHash near-dedup. Segment counts are segments, not docs."),
         "results": results,
     }, indent=1, ensure_ascii=False), encoding="utf-8")
-    print(f"\nwrote {REPORT.relative_to(ROOT)}")
+    print(f"\nwrote {report}")
     return 0
 
 
