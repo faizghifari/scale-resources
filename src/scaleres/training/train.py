@@ -454,7 +454,12 @@ def main():
         save_steps=computed_save_steps,
         save_total_limit=args.save_total_limit,
         lr_scheduler_type="cosine",
-        report_to=None if args.report_to == "none" else args.report_to,
+        # NOT None. In transformers 4.55, report_to=None resolves to ['wandb'] --
+        # "every installed integration" -- which is the opposite of what
+        # --report_to none asks for. Measured, not assumed: None -> ['wandb'],
+        # "none" -> [], [] -> []. Every run through this script before this fix
+        # uploaded metrics to W&B despite the flag.
+        report_to=[] if args.report_to == "none" else [args.report_to],
         bf16=False,
         fp16=True,
         gradient_checkpointing=args.gradient_checkpointing,
@@ -515,10 +520,15 @@ def main():
 
     print("Starting training...")
     resume_arg: bool | str = False
+    # --init_from_path_or_id used to DISABLE resume, so every CPT run that starts from a
+    # base model silently restarted from step 0 when relaunched with
+    # --resume_from_checkpoint (found 2026-09-16: S120's 100M cell restarted at step 1
+    # with checkpoint-500 on disk). Resume is safe with an init model: Trainer.train
+    # loads the checkpoint's weights, optimizer, scheduler and RNG over it, so the init
+    # weights only matter when no checkpoint exists.
     if (
         args.resume_from_checkpoint
         and not args.resume_weights_only
-        and not args.init_from_path_or_id
     ):
         last_ckpt = (
             get_last_checkpoint(args.output_dir)
